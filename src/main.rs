@@ -231,9 +231,9 @@ impl Project {
                 if let Some(deps) = deps {
                     // If a file can be included from the current solution, assume that it is.
                     // This avoids adding dependencies to headers with name clashes (like StdAfx.h).
-                    let is_present_in_this_component = false; /*deps
-                                                              .iter()
-                                                              .any(|f| self.file(*f).component == file.component);*/
+                    let is_present_in_this_component = deps
+                        .iter()
+                        .any(|f| self.file(*f).component == self.files[i_file].component);
                     if !is_present_in_this_component {
                         for dep in deps.iter() {
                             self.files[i_file].outgoing_links.push(*dep);
