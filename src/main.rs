@@ -263,40 +263,57 @@ fn read_files(root_path: &str) -> io::Result<Project> {
 
     let root_path = root_path.trim_end_matches("/");
 
-    let mut project = Project {
+    let project = std::sync::Arc::new(std::sync::Mutex::new(Project {
         root: root_path.into(),
         files: Vec::new(),
         components: Vec::new(),
-    };
+    }));
 
-    for result in ignore::WalkBuilder::new(root_path.to_owned()).build() {
-        match result {
-            Ok(entry) => {
-                let path_str = entry.path().to_str().expect("failed to parse file name");
-                if entry.path().ends_with("CMakeLists.txt") {
-                    let path = path_str.trim_end_matches("/CMakeLists.txt");
-                    project.components.push(Component {
-                        path: project.rel_path(path).to_string(),
-                        files: vec![],
-                    });
-                } else if source_suffixes.iter().any(|s| path_str.ends_with(s)) {
-                    match extract_includes(&entry.path()) {
-                        Ok(include_paths) => project.files.push(File {
-                            path: project.rel_path(path_str).to_string(),
-                            component: None,
-                            include_paths: include_paths,
-                            incoming_links: vec![],
-                            outgoing_links: vec![],
-                        }),
-                        Err(e) => println!("Error while parsing {}: {}", path_str, e),
+    ignore::WalkBuilder::new(root_path.to_owned())
+        .threads(6)
+        .build_parallel()
+        .run(|| {
+            Box::new({
+                let project = project.clone();
+                move |result: std::result::Result<ignore::DirEntry, ignore::Error>| {
+                    match result {
+                        Ok(entry) => {
+                            let path_str =
+                                entry.path().to_str().expect("failed to parse file name");
+                            if entry.path().ends_with("CMakeLists.txt") {
+                                let path = path_str.trim_end_matches("/CMakeLists.txt");
+                                let mut project = project.lock().unwrap();
+                                let path = project.rel_path(path).to_string();
+                                project.components.push(Component {
+                                    path,
+                                    files: vec![],
+                                });
+                            } else if source_suffixes.iter().any(|s| path_str.ends_with(s)) {
+                                match extract_includes(&entry.path()) {
+                                    Ok(include_paths) => {
+                                        let mut project = project.lock().unwrap();
+                                        let path = project.rel_path(path_str).to_string();
+                                        project.files.push(File {
+                                            path,
+                                            component: None,
+                                            include_paths: include_paths,
+                                            incoming_links: vec![],
+                                            outgoing_links: vec![],
+                                        })
+                                    }
+                                    Err(e) => println!("Error while parsing {}: {}", path_str, e),
+                                }
+                            }
+                        }
+                        Err(e) => panic!("{}", e), // TODO
                     }
+                    return ignore::WalkState::Continue;
                 }
-            }
-            Err(e) => panic!("{}", e), // TODO
-        }
-    }
+            })
+        });
 
-    Ok(project)
+    let lock = std::sync::Arc::try_unwrap(project).unwrap();
+    Ok(lock.into_inner().unwrap())
 }
 
 fn extract_includes(path: &Path) -> io::Result<Vec<String>> {
