@@ -1,7 +1,13 @@
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
 use structopt::StructOpt;
+
+lazy_static! {
+    static ref INCLUDE_RE: regex::bytes::Regex =
+        regex::bytes::Regex::new("#include [<\"]([^>\"]+)").unwrap();
+}
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -225,7 +231,7 @@ impl Project {
         }
 
         for i_file in 0..self.files.len() {
-            let include_paths = self.files[i_file].include_paths.clone(); // TODO: get rid of this clone?
+            let include_paths = self.files[i_file].include_paths.clone(); // TODO: get rid of this?
             for include in include_paths.iter() {
                 let deps = path_to_files.get(include.into());
                 if let Some(deps) = deps {
@@ -298,8 +304,7 @@ fn extract_includes(path: &Path) -> io::Result<Vec<String>> {
     let mut f = std::fs::File::open(path)?;
     let mut c = Vec::new();
     f.read_to_end(&mut c)?;
-    let re = regex::bytes::Regex::new("#include [<\"]([^>\"]+)[>\"]").unwrap();
-    for cap in re.captures_iter(&c) {
+    for cap in INCLUDE_RE.captures_iter(&c) {
         results.push(String::from_utf8_lossy(&cap[1]).into());
     }
     Ok(results)
