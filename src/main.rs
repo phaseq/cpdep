@@ -6,7 +6,7 @@ use structopt::StructOpt;
 
 lazy_static! {
     static ref INCLUDE_RE: regex::bytes::Regex =
-        regex::bytes::Regex::new("#include [<\"]([^>\"]+)").unwrap();
+        regex::bytes::Regex::new("#\\s*include\\s*[<\"]([^>\"]+)").unwrap();
 }
 
 #[derive(Debug, StructOpt)]
