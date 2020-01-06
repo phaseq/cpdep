@@ -20,6 +20,10 @@ struct Opt {
     #[structopt(long)]
     warn_missing: bool,
 
+    /// warn about malformed includes
+    #[structopt(long)]
+    warn_malformed: bool,
+
     /// show files for incoming dependencies
     #[structopt(long)]
     show_incoming: bool,
@@ -31,7 +35,7 @@ struct Opt {
 
 fn main() -> io::Result<()> {
     let opt = Opt::from_args();
-    let mut project = read_files(&opt.root)?;
+    let mut project = read_files(&opt)?;
     project.assign_files_to_components();
     project.generate_file_deps(&opt);
     project.print_components(&opt);
@@ -108,11 +112,21 @@ impl Project {
         );
 
         let (dep_in, dep_out) = self.linked_components(c);
+        let sort_fn = |a: &&ComponentRef, b: &&ComponentRef| {
+            self.component(**a).path.cmp(&self.component(**b).path)
+        };
+
+        let mut sorted_in: Vec<_> = dep_in.keys().collect();
+        sorted_in.sort_by(sort_fn);
+
+        let mut sorted_out: Vec<_> = dep_out.keys().collect();
+        sorted_out.sort_by(sort_fn);
+
         println!("  Incoming:");
-        for (c_ref, edges) in &dep_in {
+        for c_ref in sorted_in {
             println!("    {}", self.component(*c_ref).nice_name());
             if options.show_incoming {
-                for e in edges {
+                for e in &dep_in[c_ref] {
                     println!(
                         "      {} -> {}",
                         self.file(e.from).path,
@@ -123,10 +137,10 @@ impl Project {
         }
 
         println!("  Outgoing:");
-        for (c_ref, edges) in &dep_out {
+        for c_ref in sorted_out {
             println!("    {}", self.component(*c_ref).nice_name());
             if options.show_outgoing {
-                for e in edges {
+                for e in &dep_out[c_ref] {
                     println!(
                         "      {} -> {}",
                         self.file(e.from).path,
@@ -257,10 +271,11 @@ impl Project {
     }
 }
 
-fn read_files(root_path: &str) -> io::Result<Project> {
+fn read_files(options: &Opt) -> io::Result<Project> {
     let source_suffixes = [".cpp", ".hpp", ".c", ".h"];
     //let ignore_patterns = [".svn", "dev/tools"];
 
+    let root_path = options.root.replace('\\', "/");
     let root_path = root_path.trim_end_matches("/");
 
     let project = std::sync::Arc::new(std::sync::Mutex::new(Project {
@@ -268,6 +283,8 @@ fn read_files(root_path: &str) -> io::Result<Project> {
         files: Vec::new(),
         components: Vec::new(),
     }));
+
+    let warn_malformed = options.warn_malformed;
 
     ignore::WalkBuilder::new(root_path.to_owned())
         .threads(6)
@@ -278,8 +295,11 @@ fn read_files(root_path: &str) -> io::Result<Project> {
                 move |result: std::result::Result<ignore::DirEntry, ignore::Error>| {
                     match result {
                         Ok(entry) => {
-                            let path_str =
-                                entry.path().to_str().expect("failed to parse file name");
+                            let path_str = entry
+                                .path()
+                                .to_str()
+                                .expect("failed to parse file name")
+                                .replace('\\', "/");
                             if entry.path().ends_with("CMakeLists.txt") {
                                 let path = path_str.trim_end_matches("/CMakeLists.txt");
                                 let mut project = project.lock().unwrap();
@@ -289,10 +309,10 @@ fn read_files(root_path: &str) -> io::Result<Project> {
                                     files: vec![],
                                 });
                             } else if source_suffixes.iter().any(|s| path_str.ends_with(s)) {
-                                match extract_includes(&entry.path()) {
+                                match extract_includes(&entry.path(), warn_malformed) {
                                     Ok(include_paths) => {
                                         let mut project = project.lock().unwrap();
-                                        let path = project.rel_path(path_str).to_string();
+                                        let path = project.rel_path(&path_str).to_string();
                                         project.files.push(File {
                                             path,
                                             component: None,
@@ -316,13 +336,20 @@ fn read_files(root_path: &str) -> io::Result<Project> {
     Ok(lock.into_inner().unwrap())
 }
 
-fn extract_includes(path: &Path) -> io::Result<Vec<String>> {
+fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>> {
     let mut results = Vec::new();
     let mut f = std::fs::File::open(path)?;
-    let mut c = Vec::new();
-    f.read_to_end(&mut c)?;
-    for cap in INCLUDE_RE.captures_iter(&c) {
-        results.push(String::from_utf8_lossy(&cap[1]).into());
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)?;
+    for cap in INCLUDE_RE.captures_iter(&bytes) {
+        let include = String::from_utf8_lossy(&cap[1]).replace('\\', "/");
+        if include.contains("..") {
+            if warn_malformed {
+                println!("malformed include in {:?}: {}", path, include);
+            }
+            continue;
+        }
+        results.push(include);
     }
     Ok(results)
 }
