@@ -14,7 +14,8 @@ struct Opt {
     #[structopt(long)]
     root: String,
 
-    components: Vec<String>,
+    component_from: Option<String>,
+    component_to: Option<String>,
 
     /// warn about missing includes
     #[structopt(long)]
@@ -24,13 +25,9 @@ struct Opt {
     #[structopt(long)]
     warn_malformed: bool,
 
-    /// show files for incoming dependencies
+    /// show files for dependencies
     #[structopt(long)]
-    show_incoming: bool,
-
-    /// show files for outgoing dependencies
-    #[structopt(long)]
-    show_outgoing: bool,
+    show_files: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -98,7 +95,12 @@ impl Project {
     fn print_components(&self, options: &Opt) {
         for (c_ref, c) in self.components.iter().enumerate() {
             let c_name = c.nice_name();
-            if options.components.is_empty() || options.components.iter().any(|x| x == c_name) {
+            if options
+                .component_from
+                .as_ref()
+                .map(|f| f == c_name)
+                .unwrap_or(true)
+            {
                 self.print_component(c_ref, options);
             }
         }
@@ -112,43 +114,40 @@ impl Project {
         );
 
         let (dep_in, dep_out) = self.linked_components(c);
-        let sort_fn = |a: &&ComponentRef, b: &&ComponentRef| {
-            self.component(**a).path.cmp(&self.component(**b).path)
+
+        let print_deps = |deps: HashMap<ComponentRef, Vec<Edge>>| {
+            let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
+            let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
+                self.component(*a).path.cmp(&self.component(*b).path)
+            };
+            sorted_keys.sort_by(sort_fn);
+            for c_ref in sorted_keys {
+                let name = self.component(c_ref).nice_name();
+                if options
+                    .component_to
+                    .as_ref()
+                    .map(|t| t == name)
+                    .unwrap_or(true)
+                {
+                    println!("    {}", name);
+                    if options.show_files {
+                        for e in &deps[&c_ref] {
+                            println!(
+                                "      {} -> {}",
+                                self.file(e.from).path,
+                                self.file(e.to).path
+                            );
+                        }
+                    }
+                }
+            }
         };
 
-        let mut sorted_in: Vec<_> = dep_in.keys().collect();
-        sorted_in.sort_by(sort_fn);
-
-        let mut sorted_out: Vec<_> = dep_out.keys().collect();
-        sorted_out.sort_by(sort_fn);
-
         println!("  Incoming:");
-        for c_ref in sorted_in {
-            println!("    {}", self.component(*c_ref).nice_name());
-            if options.show_incoming {
-                for e in &dep_in[c_ref] {
-                    println!(
-                        "      {} -> {}",
-                        self.file(e.from).path,
-                        self.file(e.to).path
-                    );
-                }
-            }
-        }
+        print_deps(dep_in);
 
         println!("  Outgoing:");
-        for c_ref in sorted_out {
-            println!("    {}", self.component(*c_ref).nice_name());
-            if options.show_outgoing {
-                for e in &dep_out[c_ref] {
-                    println!(
-                        "      {} -> {}",
-                        self.file(e.from).path,
-                        self.file(e.to).path
-                    );
-                }
-            }
-        }
+        print_deps(dep_out);
     }
 
     fn linked_components(
@@ -341,6 +340,7 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
     let mut f = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     f.read_to_end(&mut bytes)?;
+
     for cap in INCLUDE_RE.captures_iter(&bytes) {
         let include = String::from_utf8_lossy(&cap[1]).replace('\\', "/");
         if include.contains("..") {
@@ -351,5 +351,6 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
         }
         results.push(include);
     }
+
     Ok(results)
 }
