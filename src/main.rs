@@ -7,6 +7,9 @@ use structopt::StructOpt;
 lazy_static! {
     static ref INCLUDE_RE: regex::bytes::Regex =
         regex::bytes::Regex::new("#\\s*include\\s*[<\"]([^>\"]+)").unwrap();
+    static ref INCLUDE_RE_16: regex::bytes::Regex =
+        regex::bytes::Regex::new("#\0[\\s\0]*i\0n\0c\0l\0u\0d\0e\0[\\s\0]*[<\"]\0([^>\"]+)")
+            .unwrap();
 }
 
 #[derive(Debug, StructOpt)]
@@ -350,6 +353,24 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
             continue;
         }
         results.push(include);
+    }
+
+    if results.is_empty() {
+        for cap in INCLUDE_RE_16.captures_iter(&bytes) {
+            let include_bytes: Vec<u16> = cap[1]
+                .chunks_exact(2)
+                .into_iter()
+                .map(|a| u16::from_ne_bytes([a[0], a[1]]))
+                .collect();
+            let include = String::from_utf16_lossy(&include_bytes).replace('\\', "/");
+            if include.contains("..") {
+                if warn_malformed {
+                    println!("malformed include in {:?}: {}", path, include);
+                }
+                continue;
+            }
+            results.push(include);
+        }
     }
 
     Ok(results)
