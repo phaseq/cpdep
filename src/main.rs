@@ -1,8 +1,21 @@
+use crossterm::{
+    event::{self, Event as CEvent, KeyCode, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io::{self, stdout, Read, Write};
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 use structopt::StructOpt;
+use tui::backend::CrosstermBackend;
+use tui::layout::{Constraint, Direction, Layout};
+use tui::style::{Color, Style};
+use tui::widgets::{Block, Borders, SelectableList, Widget};
+use tui::Terminal;
 
 lazy_static! {
     static ref INCLUDE_RE: regex::bytes::Regex =
@@ -31,14 +44,24 @@ struct Opt {
     /// show files for dependencies
     #[structopt(long)]
     show_files: bool,
+
+    /// show terminal UI
+    #[structopt(long)]
+    show_ui: bool,
 }
 
-fn main() -> io::Result<()> {
-    let opt = Opt::from_args();
-    let mut project = read_files(&opt)?;
+fn main() -> Result<(), failure::Error> {
+    let options = Opt::from_args();
+    let mut project = read_files(&options)?;
     project.assign_files_to_components();
-    project.generate_file_deps(&opt);
-    project.print_components(&opt);
+    project.generate_file_deps(&options);
+
+    if options.show_ui {
+        show_ui(&project)?;
+    } else {
+        project.print_components(&options);
+    }
+
     Ok(())
 }
 
@@ -374,4 +397,260 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
     }
 
     Ok(results)
+}
+
+struct Gui<'a> {
+    invalid: bool,
+    sel_component_idx: usize,
+    sel_dep_idx: usize,
+    sel_file_idx: usize,
+    sel_column: usize,
+    show_incoming_links: bool,
+    project_names: Vec<&'a str>,
+    deps: Vec<&'a str>,
+    files: Vec<String>,
+}
+
+impl Gui<'_> {
+    fn on_up(&mut self) {
+        if self.sel_column == 0 {
+            if self.sel_component_idx > 0 {
+                self.invalid = true;
+                self.sel_component_idx -= 1;
+                self.sel_dep_idx = 0;
+            }
+        }
+        if self.sel_column == 1 {
+            if self.sel_dep_idx > 0 {
+                self.invalid = true;
+                self.sel_dep_idx -= 1;
+                self.sel_file_idx = 0;
+            }
+        }
+        if self.sel_column == 2 {
+            if self.sel_file_idx > 0 {
+                self.sel_file_idx -= 1;
+            }
+        }
+    }
+
+    fn on_down(&mut self) {
+        if self.sel_column == 0 {
+            if self.sel_component_idx + 1 < self.project_names.len() {
+                self.invalid = true;
+                self.sel_component_idx += 1;
+                self.sel_dep_idx = 0;
+            }
+        }
+        if self.sel_column == 1 {
+            if self.sel_dep_idx + 1 < self.deps.len() {
+                self.invalid = true;
+                self.sel_dep_idx += 1;
+                self.sel_file_idx = 0;
+            }
+        }
+        if self.sel_column == 2 {
+            if self.sel_file_idx + 1 < self.files.len() {
+                self.sel_file_idx += 1;
+            }
+        }
+    }
+}
+
+enum Event<I> {
+    Input(I),
+}
+
+fn show_ui(project: &Project) -> Result<(), failure::Error> {
+    let project_names: Vec<&str> = project.components.iter().map(|c| c.nice_name()).collect();
+    let mut sorted_projects: Vec<(usize, &str)> = project_names
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i, *s))
+        .collect();
+    sorted_projects.sort_by(|a, b| a.1.cmp(b.1));
+    let sorted_project_names: Vec<&str> = sorted_projects.iter().map(|(_i, s)| *s).collect();
+
+    enable_raw_mode()?;
+
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+
+    let backend = CrosstermBackend::new(stdout);
+
+    let mut terminal = Terminal::new(backend)?;
+    terminal.hide_cursor()?;
+
+    // Setup input handling
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        loop {
+            // poll for tick rate duration, if no events, sent tick event.
+            if event::poll(Duration::from_millis(250)).unwrap() {
+                if let CEvent::Key(key) = event::read().unwrap() {
+                    tx.send(Event::Input(key)).unwrap();
+                }
+            }
+        }
+    });
+
+    terminal.clear()?;
+
+    let mut gui = Gui {
+        invalid: true,
+        sel_component_idx: 0,
+        sel_dep_idx: 0,
+        sel_file_idx: 0,
+        sel_column: 0,
+        show_incoming_links: true,
+        project_names,
+        deps: vec![],
+        files: vec![],
+    };
+
+    loop {
+        if gui.invalid {
+            let (dep_in, dep_out) =
+                project.linked_components(sorted_projects[gui.sel_component_idx].0);
+
+            let extract_deps =
+                |deps: HashMap<ComponentRef, Vec<Edge>>| -> Vec<(&str, Vec<String>)> {
+                    let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
+                    let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
+                        project.component(*a).path.cmp(&project.component(*b).path)
+                    };
+                    sorted_keys.sort_by(sort_fn);
+                    sorted_keys
+                        .into_iter()
+                        .map(|c_ref| {
+                            let name = project.component(c_ref).nice_name();
+                            let files = deps[&c_ref]
+                                .iter()
+                                .map(|e| {
+                                    format!(
+                                        "{} -> {}",
+                                        project.file(e.from).path,
+                                        project.file(e.to).path
+                                    )
+                                })
+                                .collect();
+                            (name, files)
+                        })
+                        .collect()
+                };
+
+            let dep_in = match gui.show_incoming_links {
+                true => extract_deps(dep_in),
+                false => extract_deps(dep_out),
+            };
+            gui.deps = dep_in.iter().map(|d| d.0).collect();
+            gui.files.clear();
+            if gui.sel_dep_idx < dep_in.len() {
+                gui.files = dep_in[gui.sel_dep_idx].1.clone();
+            }
+        }
+
+        let mut field_heights = [0, 0, 0];
+
+        terminal.draw(|mut f| {
+            let vertical_split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(f.size());
+            let horizontal_split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(vertical_split[0]);
+
+            field_heights = [
+                horizontal_split[0].height,
+                horizontal_split[1].height,
+                vertical_split[1].height,
+            ];
+
+            let style = Style::default().fg(Color::White).bg(Color::Black);
+            let style_selected = Style::default().fg(Color::White).bg(Color::DarkGray);
+
+            for i in 0..3 {
+                let title = match i {
+                    0 => "Component (navigate with arrow/page keys)",
+                    1 if gui.show_incoming_links => "Incoming (press o for outgoing)",
+                    1 => "Outgoing (press i for incoming)",
+                    2 => "Files",
+                    _ => unreachable!(),
+                };
+                let list = SelectableList::default()
+                    .block(Block::default().borders(Borders::ALL).title(title))
+                    .highlight_symbol(">");
+                let list = match gui.sel_column == i {
+                    true => list.style(style_selected).highlight_style(style_selected),
+                    false => list.style(style).highlight_style(style),
+                };
+                match i {
+                    0 => list
+                        .items(&sorted_project_names)
+                        .select(Some(gui.sel_component_idx))
+                        .render(&mut f, horizontal_split[0]),
+                    1 => list
+                        .items(&gui.deps)
+                        .select(Some(gui.sel_dep_idx))
+                        .render(&mut f, horizontal_split[1]),
+                    2 => list
+                        .items(&gui.files)
+                        .select(Some(gui.sel_file_idx))
+                        .render(&mut f, vertical_split[1]),
+                    _ => unreachable!(),
+                };
+            }
+        })?;
+
+        match rx.recv()? {
+            Event::Input(event) => match event.code {
+                KeyCode::Char('c') if event.modifiers == KeyModifiers::CONTROL => {
+                    disable_raw_mode()?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                    terminal.show_cursor()?;
+                    break;
+                }
+                KeyCode::Char('i') => {
+                    gui.sel_dep_idx = 0;
+                    gui.show_incoming_links = true;
+                }
+                KeyCode::Char('o') => {
+                    gui.sel_dep_idx = 0;
+                    gui.show_incoming_links = false;
+                }
+                KeyCode::Up => {
+                    gui.on_up();
+                }
+                KeyCode::PageUp => {
+                    for _ in 0..field_heights[gui.sel_column] {
+                        gui.on_up();
+                    }
+                }
+                KeyCode::Down => {
+                    gui.on_down();
+                }
+                KeyCode::PageDown => {
+                    for _ in 0..field_heights[gui.sel_column] {
+                        gui.on_down();
+                    }
+                }
+                KeyCode::Left => {
+                    if gui.sel_column > 0 {
+                        gui.sel_column -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if gui.sel_column < 2 {
+                        gui.sel_column += 1;
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    Ok(())
 }
