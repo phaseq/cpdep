@@ -368,12 +368,12 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
     f.read_to_end(&mut bytes)?;
 
     for cap in INCLUDE_RE.captures_iter(&bytes) {
-        let include = String::from_utf8_lossy(&cap[1]).replace('\\', "/");
-        if include.contains("..") {
+        let mut include = String::from_utf8_lossy(&cap[1]).replace('\\', "/");
+        if let Some(idx) = include.rfind("../") {
             if warn_malformed {
                 println!("malformed include in {:?}: {}", path, include);
             }
-            continue;
+            include = include.split_off(idx + 3);
         }
         results.push(include);
     }
@@ -385,12 +385,12 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
                 .into_iter()
                 .map(|a| u16::from_ne_bytes([a[0], a[1]]))
                 .collect();
-            let include = String::from_utf16_lossy(&include_bytes).replace('\\', "/");
-            if include.contains("..") {
+            let mut include = String::from_utf16_lossy(&include_bytes).replace('\\', "/");
+            if let Some(idx) = include.rfind("../") {
                 if warn_malformed {
                     println!("malformed include in {:?}: {}", path, include);
                 }
-                continue;
+                include = include.split_off(idx + 3);
             }
             results.push(include);
         }
@@ -569,7 +569,7 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                 vertical_split[1].height,
             ];
 
-            let style = Style::default().fg(Color::White).bg(Color::Black);
+            let style = Style::default();
             let style_selected = Style::default().fg(Color::White).bg(Color::DarkGray);
 
             for i in 0..3 {
@@ -584,7 +584,7 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                     .block(Block::default().borders(Borders::ALL).title(title))
                     .highlight_symbol(">");
                 let list = match gui.sel_column == i {
-                    true => list.style(style_selected).highlight_style(style_selected),
+                    true => list.style(style).highlight_style(style_selected),
                     false => list.style(style).highlight_style(style),
                 };
                 match i {
