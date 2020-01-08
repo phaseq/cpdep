@@ -25,13 +25,10 @@ lazy_static! {
             .unwrap();
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(StructOpt)]
 struct Opt {
     #[structopt(long)]
     root: String,
-
-    component_from: Option<String>,
-    component_to: Option<String>,
 
     /// warn about missing includes
     #[structopt(long)]
@@ -41,13 +38,28 @@ struct Opt {
     #[structopt(long)]
     warn_malformed: bool,
 
-    /// show files for dependencies
-    #[structopt(long)]
-    show_files: bool,
+    #[structopt(subcommand)]
+    cmd: Cmd,
+}
 
+#[derive(StructOpt)]
+enum Cmd {
+    // show direct links between components
+    Links {
+        /// show incoming and outgoing links for this component
+        component_from: Option<String>,
+
+        // giving a second component restricts links further
+        component_to: Option<String>,
+
+        /// show files for dependencies
+        #[structopt(long)]
+        show_files: bool,
+    },
     /// show terminal UI
-    #[structopt(long)]
-    show_ui: bool,
+    UI {},
+    /// show all strongly connected components
+    Scc {},
 }
 
 fn main() -> Result<(), failure::Error> {
@@ -56,10 +68,14 @@ fn main() -> Result<(), failure::Error> {
     project.assign_files_to_components();
     project.generate_file_deps(&options);
 
-    if options.show_ui {
-        show_ui(&project)?;
-    } else {
-        project.print_components(&options);
+    match options.cmd {
+        Cmd::Links {
+            component_from,
+            component_to,
+            show_files,
+        } => project.print_components(component_from, component_to, show_files),
+        Cmd::UI {} => show_ui(&project)?,
+        Cmd::Scc {} => show_sccs(&project),
     }
 
     Ok(())
@@ -118,21 +134,21 @@ impl Project {
         return path.trim_start_matches(&self.root).trim_start_matches('/');
     }
 
-    fn print_components(&self, options: &Opt) {
+    fn print_components(
+        &self,
+        component_from: Option<String>,
+        component_to: Option<String>,
+        show_files: bool,
+    ) {
         for (c_ref, c) in self.components.iter().enumerate() {
             let c_name = c.nice_name();
-            if options
-                .component_from
-                .as_ref()
-                .map(|f| f == c_name)
-                .unwrap_or(true)
-            {
-                self.print_component(c_ref, options);
+            if component_from.as_ref().map(|f| f == c_name).unwrap_or(true) {
+                self.print_component(c_ref, &component_to, show_files);
             }
         }
     }
 
-    fn print_component(&self, c: ComponentRef, options: &Opt) {
+    fn print_component(&self, c: ComponentRef, component_to: &Option<String>, show_files: bool) {
         println!(
             "{} ({})",
             self.component(c).nice_name(),
@@ -149,14 +165,9 @@ impl Project {
             sorted_keys.sort_by(sort_fn);
             for c_ref in sorted_keys {
                 let name = self.component(c_ref).nice_name();
-                if options
-                    .component_to
-                    .as_ref()
-                    .map(|t| t == name)
-                    .unwrap_or(true)
-                {
+                if component_to.as_ref().map(|t| t == name).unwrap_or(true) {
                     println!("    {}", name);
-                    if options.show_files {
+                    if show_files {
                         for e in &deps[&c_ref] {
                             println!(
                                 "      {} -> {}",
@@ -187,7 +198,10 @@ impl Project {
         let mut outgoing: HashMap<ComponentRef, Vec<Edge>> = HashMap::new();
         for f in self.component(c).files.iter() {
             for fo in self.file(*f).incoming_links.iter() {
-                let co = self.file(*fo).component.unwrap();
+                let co = match self.file(*fo).component {
+                    Some(c) => c,
+                    None => continue,
+                };
                 if co != c {
                     incoming
                         .entry(co)
@@ -196,11 +210,10 @@ impl Project {
                 }
             }
             for fo in self.file(*f).outgoing_links.iter() {
-                let co = self.file(*fo).component;
-                if co.is_none() {
-                    println!("no component found: {:?}", self.file(*fo));
-                }
-                let co = co.unwrap();
+                let co = match self.file(*fo).component {
+                    Some(c) => c,
+                    None => continue,
+                };
                 if co != c {
                     outgoing
                         .entry(co)
@@ -397,6 +410,102 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
     }
 
     Ok(results)
+}
+
+fn show_sccs(project: &Project) {
+    let sccs = Tarjan::run(project);
+
+    for mut scc in sccs.into_iter().filter(|c| c.len() > 1) {
+        scc.reverse();
+        println!("Strongly Connected:");
+        for c_ref in scc {
+            println!("  {}", project.component(c_ref).nice_name());
+        }
+    }
+}
+
+struct Tarjan {
+    index: i32,
+    indices: Vec<i32>,
+    lowlink: Vec<i32>,
+    on_stack: Vec<bool>,
+    stack: Vec<ComponentRef>,
+    sccs: Vec<Vec<ComponentRef>>,
+}
+
+impl Tarjan {
+    fn run(project: &Project) -> Vec<Vec<ComponentRef>> {
+        let mut t = Tarjan {
+            index: 0,
+            indices: std::iter::repeat(-1)
+                .take(project.components.len())
+                .collect(),
+            lowlink: std::iter::repeat(-1)
+                .take(project.components.len())
+                .collect(),
+            on_stack: std::iter::repeat(false)
+                .take(project.components.len())
+                .collect(),
+            stack: vec![],
+            sccs: vec![],
+        };
+        for v in 0..project.components.len() {
+            if t.indices[v] == -1 {
+                t.strong_connect(v, project);
+            }
+        }
+        t.sccs
+    }
+
+    fn strong_connect(&mut self, v: ComponentRef, project: &Project) {
+        // Set the depth index for v to the smallest unused index
+        self.indices[v] = self.index;
+        self.lowlink[v] = self.index;
+        self.index += 1;
+        self.stack.push(v);
+        self.on_stack[v] = true;
+
+        // Consider successors of v
+        for w in project
+            .component(v)
+            .files
+            .iter()
+            .flat_map(|f| &project.file(*f).outgoing_links)
+            .filter(|f| project.file(**f).component != Some(v))
+            .filter_map(|f| {
+                let f = project.file(*f);
+                /*if f.component.is_none() {
+                    println!("unassigned file: {}", f.path);
+                }*/
+                f.component
+            })
+        {
+            if self.indices[w] == -1 {
+                // Successor w has not yet been visited; recurse on it
+                self.strong_connect(w, &project);
+                self.lowlink[v] = std::cmp::min(self.lowlink[v], self.lowlink[w]);
+            } else if self.on_stack[w] {
+                // Successor w is in stack S and hence in the current SCC
+                // If w is not on stack, then (v, w) is a cross-edge in the DFS tree and must be ignored
+                // Note: The next line may look odd - but is correct.
+                // It says w.index not w.lowlink; that is deliberate and from the original paper
+                self.lowlink[v] = std::cmp::min(self.lowlink[v], self.indices[w]);
+            }
+        }
+        // If v is a root node, pop the stack and generate an SCC
+        if self.lowlink[v] == self.indices[v] {
+            let mut scc = vec![];
+            loop {
+                let w = self.stack.pop().expect("empty stack?");
+                self.on_stack[w] = false;
+                scc.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            self.sccs.push(scc);
+        }
+    }
 }
 
 struct Gui {
