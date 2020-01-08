@@ -399,61 +399,44 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
     Ok(results)
 }
 
-struct Gui<'a> {
+struct Gui {
     invalid: bool,
-    sel_component_idx: usize,
-    sel_dep_idx: usize,
-    sel_file_idx: usize,
     sel_column: usize,
+    columns: [Column; 3],
     show_incoming_links: bool,
-    project_names: Vec<&'a str>,
-    deps: Vec<&'a str>,
-    files: Vec<String>,
 }
 
-impl Gui<'_> {
+impl Gui {
     fn on_up(&mut self) {
-        if self.sel_column == 0 {
-            if self.sel_component_idx > 0 {
-                self.invalid = true;
-                self.sel_component_idx -= 1;
-                self.sel_dep_idx = 0;
-            }
-        }
-        if self.sel_column == 1 {
-            if self.sel_dep_idx > 0 {
-                self.invalid = true;
-                self.sel_dep_idx -= 1;
-                self.sel_file_idx = 0;
-            }
-        }
-        if self.sel_column == 2 {
-            if self.sel_file_idx > 0 {
-                self.sel_file_idx -= 1;
+        let selected = &mut self.columns[self.sel_column].selected;
+        if *selected > 0 {
+            self.invalid = true;
+            *selected -= 1;
+            for c in self.columns.iter_mut().skip(self.sel_column + 1) {
+                c.selected = 0;
             }
         }
     }
 
     fn on_down(&mut self) {
-        if self.sel_column == 0 {
-            if self.sel_component_idx + 1 < self.project_names.len() {
-                self.invalid = true;
-                self.sel_component_idx += 1;
-                self.sel_dep_idx = 0;
+        let selected = &mut self.columns[self.sel_column].selected;
+        if *selected + 1 < self.columns[self.sel_column].items.len() {
+            self.invalid = true;
+            *selected += 1;
+            for c in self.columns.iter_mut().skip(self.sel_column + 1) {
+                c.selected = 0;
             }
         }
-        if self.sel_column == 1 {
-            if self.sel_dep_idx + 1 < self.deps.len() {
-                self.invalid = true;
-                self.sel_dep_idx += 1;
-                self.sel_file_idx = 0;
-            }
-        }
-        if self.sel_column == 2 {
-            if self.sel_file_idx + 1 < self.files.len() {
-                self.sel_file_idx += 1;
-            }
-        }
+    }
+}
+
+struct Column {
+    items: Vec<String>,
+    selected: usize,
+}
+impl Column {
+    fn new(items: Vec<String>) -> Column {
+        Column { items, selected: 0 }
     }
 }
 
@@ -469,7 +452,8 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
         .map(|(i, s)| (i, *s))
         .collect();
     sorted_projects.sort_by(|a, b| a.1.cmp(b.1));
-    let sorted_project_names: Vec<&str> = sorted_projects.iter().map(|(_i, s)| *s).collect();
+    let sorted_project_names: Vec<String> =
+        sorted_projects.iter().map(|(_i, s)| (*s).into()).collect();
 
     enable_raw_mode()?;
 
@@ -499,56 +483,31 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
 
     let mut gui = Gui {
         invalid: true,
-        sel_component_idx: 0,
-        sel_dep_idx: 0,
-        sel_file_idx: 0,
         sel_column: 0,
+        columns: [
+            Column::new(sorted_project_names),
+            Column::new(vec![]),
+            Column::new(vec![]),
+        ],
         show_incoming_links: true,
-        project_names,
-        deps: vec![],
-        files: vec![],
     };
 
     loop {
         if gui.invalid {
             let (dep_in, dep_out) =
-                project.linked_components(sorted_projects[gui.sel_component_idx].0);
+                project.linked_components(sorted_projects[gui.columns[0].selected].0);
 
-            let extract_deps =
-                |deps: HashMap<ComponentRef, Vec<Edge>>| -> Vec<(&str, Vec<String>)> {
-                    let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
-                    let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
-                        project.component(*a).path.cmp(&project.component(*b).path)
-                    };
-                    sorted_keys.sort_by(sort_fn);
-                    sorted_keys
-                        .into_iter()
-                        .map(|c_ref| {
-                            let name = project.component(c_ref).nice_name();
-                            let files = deps[&c_ref]
-                                .iter()
-                                .map(|e| {
-                                    format!(
-                                        "{} -> {}",
-                                        project.file(e.from).path,
-                                        project.file(e.to).path
-                                    )
-                                })
-                                .collect();
-                            (name, files)
-                        })
-                        .collect()
-                };
-
-            let dep_in = match gui.show_incoming_links {
-                true => extract_deps(dep_in),
-                false => extract_deps(dep_out),
+            let (deps, files) = match gui.show_incoming_links {
+                true => get_dependencies_and_edge_descriptions(&project, dep_in),
+                false => get_dependencies_and_edge_descriptions(&project, dep_out),
             };
-            gui.deps = dep_in.iter().map(|d| d.0).collect();
-            gui.files.clear();
-            if gui.sel_dep_idx < dep_in.len() {
-                gui.files = dep_in[gui.sel_dep_idx].1.clone();
-            }
+
+            gui.columns[1].items = deps;
+            gui.columns[2].items = files
+                .into_iter()
+                .nth(gui.columns[1].selected)
+                .take()
+                .unwrap_or_default();
         }
 
         let mut field_heights = [0, 0, 0];
@@ -563,10 +522,11 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                 .split(vertical_split[0]);
 
+            let column_rects = [horizontal_split[0], horizontal_split[1], vertical_split[1]];
             field_heights = [
-                horizontal_split[0].height,
-                horizontal_split[1].height,
-                vertical_split[1].height,
+                column_rects[0].height,
+                column_rects[1].height,
+                column_rects[2].height,
             ];
 
             let style = Style::default();
@@ -582,26 +542,14 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                 };
                 let list = SelectableList::default()
                     .block(Block::default().borders(Borders::ALL).title(title))
-                    .highlight_symbol(">");
-                let list = match gui.sel_column == i {
+                    .highlight_symbol(">")
+                    .items(&gui.columns[i].items)
+                    .select(Some(gui.columns[i].selected));
+                let mut list = match gui.sel_column == i {
                     true => list.style(style).highlight_style(style_selected),
                     false => list.style(style).highlight_style(style),
                 };
-                match i {
-                    0 => list
-                        .items(&sorted_project_names)
-                        .select(Some(gui.sel_component_idx))
-                        .render(&mut f, horizontal_split[0]),
-                    1 => list
-                        .items(&gui.deps)
-                        .select(Some(gui.sel_dep_idx))
-                        .render(&mut f, horizontal_split[1]),
-                    2 => list
-                        .items(&gui.files)
-                        .select(Some(gui.sel_file_idx))
-                        .render(&mut f, vertical_split[1]),
-                    _ => unreachable!(),
-                };
+                list.render(&mut f, column_rects[i]);
             }
         })?;
 
@@ -614,11 +562,11 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                     break;
                 }
                 KeyCode::Char('i') => {
-                    gui.sel_dep_idx = 0;
+                    gui.columns[1].selected = 0;
                     gui.show_incoming_links = true;
                 }
                 KeyCode::Char('o') => {
-                    gui.sel_dep_idx = 0;
+                    gui.columns[1].selected = 0;
                     gui.show_incoming_links = false;
                 }
                 KeyCode::Up => {
@@ -653,4 +601,35 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
     }
 
     Ok(())
+}
+
+fn get_dependencies_and_edge_descriptions(
+    project: &Project,
+    deps: HashMap<ComponentRef, Vec<Edge>>,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
+    let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
+        project.component(*a).path.cmp(&project.component(*b).path)
+    };
+    sorted_keys.sort_by(sort_fn);
+    let dep_names = sorted_keys
+        .iter()
+        .map(|&c_ref| project.component(c_ref).nice_name().into())
+        .collect();
+    let files = sorted_keys
+        .into_iter()
+        .map(|c_ref| {
+            deps[&c_ref]
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{} -> {}",
+                        project.file(e.from).path,
+                        project.file(e.to).path
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    (dep_names, files)
 }
