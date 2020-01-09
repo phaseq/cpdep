@@ -105,7 +105,7 @@ impl Component {
         if self.path.is_empty() {
             return ".";
         }
-        return &self.path;
+        &self.path
     }
 }
 
@@ -123,15 +123,15 @@ struct Project {
 
 impl Project {
     fn file(&self, r: FileRef) -> &File {
-        return &self.files[r];
+        &self.files[r]
     }
 
     fn component(&self, r: ComponentRef) -> &Component {
-        return &self.components[r];
+        &self.components[r]
     }
 
     fn rel_path<'a>(&self, path: &'a str) -> &'a str {
-        return path.trim_start_matches(&self.root).trim_start_matches('/');
+        path.trim_start_matches(&self.root).trim_start_matches('/')
     }
 
     fn print_components(
@@ -285,7 +285,7 @@ impl Project {
         for i_file in 0..self.files.len() {
             let include_paths = self.files[i_file].include_paths.clone(); // TODO: get rid of this?
             for include in include_paths.iter() {
-                let deps = path_to_files.get(include.into());
+                let deps = path_to_files.get(include);
                 if let Some(deps) = deps {
                     // If a file can be included from the current solution, assume that it is.
                     // This avoids adding dependencies to headers with name clashes (like StdAfx.h).
@@ -314,7 +314,7 @@ fn read_files(options: &Opt) -> io::Result<Project> {
     //let ignore_patterns = [".svn", "dev/tools"];
 
     let root_path = options.root.replace('\\', "/");
-    let root_path = root_path.trim_end_matches("/");
+    let root_path = root_path.trim_end_matches('/');
 
     let project = std::sync::Arc::new(std::sync::Mutex::new(Project {
         root: root_path.into(),
@@ -354,7 +354,7 @@ fn read_files(options: &Opt) -> io::Result<Project> {
                                         project.files.push(File {
                                             path,
                                             component: None,
-                                            include_paths: include_paths,
+                                            include_paths,
                                             incoming_links: vec![],
                                             outgoing_links: vec![],
                                         })
@@ -365,7 +365,7 @@ fn read_files(options: &Opt) -> io::Result<Project> {
                         }
                         Err(e) => panic!("{}", e), // TODO
                     }
-                    return ignore::WalkState::Continue;
+                    ignore::WalkState::Continue
                 }
             })
         });
@@ -395,7 +395,6 @@ fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>
         for cap in INCLUDE_RE_16.captures_iter(&bytes) {
             let include_bytes: Vec<u16> = cap[1]
                 .chunks_exact(2)
-                .into_iter()
                 .map(|a| u16::from_ne_bytes([a[0], a[1]]))
                 .collect();
             let mut include = String::from_utf16_lossy(&include_bytes).replace('\\', "/");
@@ -606,9 +605,10 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
             let (dep_in, dep_out) =
                 project.linked_components(sorted_projects[gui.columns[0].selected].0);
 
-            let (deps, files) = match gui.show_incoming_links {
-                true => get_dependencies_and_edge_descriptions(&project, dep_in),
-                false => get_dependencies_and_edge_descriptions(&project, dep_out),
+            let (deps, files) = if gui.show_incoming_links {
+                get_dependencies_and_edge_descriptions(&project, dep_in)
+            } else {
+                get_dependencies_and_edge_descriptions(&project, dep_out)
             };
 
             gui.columns[1].items = deps;
@@ -654,9 +654,10 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                     .highlight_symbol(">")
                     .items(&gui.columns[i].items)
                     .select(Some(gui.columns[i].selected));
-                let mut list = match gui.sel_column == i {
-                    true => list.style(style).highlight_style(style_selected),
-                    false => list.style(style).highlight_style(style),
+                let mut list = if gui.sel_column == i {
+                    list.style(style).highlight_style(style_selected)
+                } else {
+                    list.style(style).highlight_style(style)
                 };
                 list.render(&mut f, column_rects[i]);
             }
