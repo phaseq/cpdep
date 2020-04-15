@@ -14,7 +14,7 @@ use structopt::StructOpt;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Constraint, Direction, Layout};
 use tui::style::{Color, Style};
-use tui::widgets::{Block, Borders, SelectableList, Widget};
+use tui::widgets::{Block, Borders, List, ListState, Text};
 use tui::Terminal;
 
 lazy_static! {
@@ -363,7 +363,9 @@ fn read_files(options: &Opt) -> io::Result<Project> {
                                 }
                             }
                         }
-                        Err(e) => panic!("{}", e), // TODO
+                        Err(e) => {
+                            println!("Failed to parse file: {}", e);
+                        }
                     }
                     return ignore::WalkState::Continue;
                 }
@@ -517,23 +519,25 @@ struct Gui {
 
 impl Gui {
     fn on_up(&mut self) {
-        let selected = &mut self.columns[self.sel_column].selected;
-        if *selected > 0 {
+        let list_state = &mut self.columns[self.sel_column].list_state;
+        let selected = list_state.selected().unwrap_or(0);
+        if selected > 0 {
             self.invalid = true;
-            *selected -= 1;
+            list_state.select(Some(selected - 1));
             for c in self.columns.iter_mut().skip(self.sel_column + 1) {
-                c.selected = 0;
+                c.list_state.select(Some(0));
             }
         }
     }
 
     fn on_down(&mut self) {
-        let selected = &mut self.columns[self.sel_column].selected;
-        if *selected + 1 < self.columns[self.sel_column].items.len() {
+        let list_state = &mut self.columns[self.sel_column].list_state;
+        let selected = list_state.selected().unwrap_or(0);
+        if selected + 1 < self.columns[self.sel_column].items.len() {
             self.invalid = true;
-            *selected += 1;
+            list_state.select(Some(selected + 1));
             for c in self.columns.iter_mut().skip(self.sel_column + 1) {
-                c.selected = 0;
+                c.list_state.select(Some(0));
             }
         }
     }
@@ -541,11 +545,13 @@ impl Gui {
 
 struct Column {
     items: Vec<String>,
-    selected: usize,
+    list_state: ListState,
 }
 impl Column {
     fn new(items: Vec<String>) -> Column {
-        Column { items, selected: 0 }
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        Column { items, list_state }
     }
 }
 
@@ -603,8 +609,9 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
 
     loop {
         if gui.invalid {
-            let (dep_in, dep_out) =
-                project.linked_components(sorted_projects[gui.columns[0].selected].0);
+            let (dep_in, dep_out) = project.linked_components(
+                sorted_projects[gui.columns[0].list_state.selected().unwrap_or(0)].0,
+            );
 
             let (deps, files) = match gui.show_incoming_links {
                 true => get_dependencies_and_edge_descriptions(&project, dep_in),
@@ -614,7 +621,7 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
             gui.columns[1].items = deps;
             gui.columns[2].items = files
                 .into_iter()
-                .nth(gui.columns[1].selected)
+                .nth(gui.columns[1].list_state.selected().unwrap_or(0))
                 .take()
                 .unwrap_or_default();
         }
@@ -649,16 +656,15 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                     2 => "Files",
                     _ => unreachable!(),
                 };
-                let list = SelectableList::default()
+                let items = gui.columns[i].items.iter().map(|i| Text::raw(i.clone()));
+                let list = List::new(items)
                     .block(Block::default().borders(Borders::ALL).title(title))
-                    .highlight_symbol(">")
-                    .items(&gui.columns[i].items)
-                    .select(Some(gui.columns[i].selected));
-                let mut list = match gui.sel_column == i {
+                    .highlight_symbol(">");
+                let list = match gui.sel_column == i {
                     true => list.style(style).highlight_style(style_selected),
                     false => list.style(style).highlight_style(style),
                 };
-                list.render(&mut f, column_rects[i]);
+                f.render_stateful_widget(list, column_rects[i], &mut gui.columns[i].list_state);
             }
         })?;
 
@@ -671,11 +677,11 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
                     break;
                 }
                 KeyCode::Char('i') => {
-                    gui.columns[1].selected = 0;
+                    gui.columns[1].list_state.select(Some(0));
                     gui.show_incoming_links = true;
                 }
                 KeyCode::Char('o') => {
-                    gui.columns[1].selected = 0;
+                    gui.columns[1].list_state.select(Some(0));
                     gui.show_incoming_links = false;
                 }
                 KeyCode::Up => {

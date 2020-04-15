@@ -8,8 +8,8 @@ edition = "2018"
 
 [dependencies]
 lazy_static = "1"
-crossterm = "0.14"
-tui = { version = "0.8", default-features = false, features = ['crossterm'] }
+crossterm = "0.17"
+tui = { version = "0.9", default-features = false, features = ['crossterm'] }
 failure = "0.1"
 
 [dependencies.structopt]
