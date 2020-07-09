@@ -3,10 +3,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::io::{self, stdout, Read, Write};
-use std::path::Path;
+use std::io::{stdout, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -17,16 +15,11 @@ use tui::style::{Color, Style};
 use tui::widgets::{Block, Borders, List, ListState, Text};
 use tui::Terminal;
 
-lazy_static! {
-    static ref INCLUDE_RE: regex::bytes::Regex =
-        regex::bytes::Regex::new("#\\s*include\\s*[<\"]([^>\"]+)").unwrap();
-    static ref INCLUDE_RE_16: regex::bytes::Regex =
-        regex::bytes::Regex::new("#\0[\\s\0]*i\0n\0c\0l\0u\0d\0e\0[\\s\0]*[<\"]\0([^>\"]+)")
-            .unwrap();
-}
+mod file_collector;
+use file_collector::{Component, File};
 
 #[derive(StructOpt)]
-struct Opt {
+pub struct Opt {
     #[structopt(long)]
     root: String,
 
@@ -64,8 +57,21 @@ enum Cmd {
 
 fn main() -> Result<(), failure::Error> {
     let options = Opt::from_args();
-    let mut project = read_files(&options)?;
-    project.assign_files_to_components();
+    let base_project = file_collector::read_files(&options);
+    let file_components = files_to_components(&base_project);
+    let mut component_files = vec![vec![]; base_project.components.len()];
+    for (i, &c) in file_components.iter().enumerate() {
+        component_files[c].push(i);
+    }
+
+    let n_files = base_project.files.len();
+    let mut project = Project {
+        files: base_project.files,
+        components: base_project.components,
+        file_components,
+        component_files,
+        file_links: vec![FileLinks::default(); n_files],
+    };
     project.generate_file_deps(&options);
 
     match options.cmd {
@@ -81,59 +87,66 @@ fn main() -> Result<(), failure::Error> {
     Ok(())
 }
 
-type ComponentRef = usize;
-type FileRef = usize;
+struct Project {
+    files: Vec<File>,
+    components: Vec<Component>,
+    file_components: Vec<ComponentRef>,
+    component_files: Vec<Vec<FileRef>>,
+    file_links: Vec<FileLinks>,
+}
 
-#[derive(Debug)]
-struct File {
-    path: String,
-    include_paths: Vec<String>,
-
-    component: Option<ComponentRef>,
+#[derive(Clone, Default)]
+struct FileLinks {
     incoming_links: Vec<FileRef>,
     outgoing_links: Vec<FileRef>,
 }
 
-#[derive(Debug)]
-struct Component {
-    path: String,
-    files: Vec<FileRef>,
-}
-
-impl Component {
-    fn nice_name(&self) -> &str {
-        if self.path.is_empty() {
-            return ".";
-        }
-        &self.path
-    }
-}
+type ComponentRef = usize;
+type FileRef = usize;
 
 struct Edge {
     from: FileRef,
     to: FileRef,
 }
 
-#[derive(Debug)]
-struct Project {
-    root: String,
-    files: Vec<File>,
-    components: Vec<Component>,
+fn files_to_components(base_project: &file_collector::FileCollector) -> Vec<ComponentRef> {
+    let default_component = base_project
+        .components
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.path.is_empty())
+        .map(|(i, _)| i)
+        .unwrap();
+
+    base_project
+        .files
+        .iter()
+        .map(|file| {
+            // Iterate over prefixes of file path, to find the most specific component.
+            // Assign to the most specific component.
+            // Example: file path: "a/b/header.hpp"
+            // candidate 1: a/b
+            // candidate 2: a
+            // candidate 3: ''
+            let mut path = file.path.clone();
+            for (idx, _) in file.path.rmatch_indices('/') {
+                path.truncate(idx);
+                if let Some((i, _c)) = base_project
+                    .components
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.path == path)
+                {
+                    return i;
+                }
+            }
+
+            return default_component;
+        })
+        .collect()
 }
 
 impl Project {
-    fn file(&self, r: FileRef) -> &File {
-        &self.files[r]
-    }
-
-    fn component(&self, r: ComponentRef) -> &Component {
-        &self.components[r]
-    }
-
-    fn rel_path<'a>(&self, path: &'a str) -> &'a str {
-        path.trim_start_matches(&self.root).trim_start_matches('/')
-    }
-
     fn print_components(
         &self,
         component_from: Option<String>,
@@ -151,8 +164,8 @@ impl Project {
     fn print_component(&self, c: ComponentRef, component_to: &Option<String>, show_files: bool) {
         println!(
             "{} ({})",
-            self.component(c).nice_name(),
-            self.component(c).files.len()
+            self.components[c].nice_name(),
+            self.component_files[c].len()
         );
 
         let (dep_in, dep_out) = self.linked_components(c);
@@ -160,19 +173,18 @@ impl Project {
         let print_deps = |deps: HashMap<ComponentRef, Vec<Edge>>| {
             let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
             let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
-                self.component(*a).path.cmp(&self.component(*b).path)
+                self.components[*a].path.cmp(&self.components[*b].path)
             };
             sorted_keys.sort_by(sort_fn);
             for c_ref in sorted_keys {
-                let name = self.component(c_ref).nice_name();
+                let name = self.components[c_ref].nice_name();
                 if component_to.as_ref().map(|t| t == name).unwrap_or(true) {
                     println!("    {}", name);
                     if show_files {
                         for e in &deps[&c_ref] {
                             println!(
                                 "      {} -> {}",
-                                self.file(e.from).path,
-                                self.file(e.to).path
+                                self.files[e.from].path, self.files[e.to].path
                             );
                         }
                     }
@@ -196,12 +208,9 @@ impl Project {
     ) {
         let mut incoming: HashMap<ComponentRef, Vec<Edge>> = HashMap::new();
         let mut outgoing: HashMap<ComponentRef, Vec<Edge>> = HashMap::new();
-        for f in self.component(c).files.iter() {
-            for fo in self.file(*f).incoming_links.iter() {
-                let co = match self.file(*fo).component {
-                    Some(c) => c,
-                    None => continue,
-                };
+        for f in self.component_files[c].iter() {
+            for fo in self.file_links[*f].incoming_links.iter() {
+                let co = self.file_components[*fo];
                 if co != c {
                     incoming
                         .entry(co)
@@ -209,11 +218,8 @@ impl Project {
                         .push(Edge { from: *fo, to: *f })
                 }
             }
-            for fo in self.file(*f).outgoing_links.iter() {
-                let co = match self.file(*fo).component {
-                    Some(c) => c,
-                    None => continue,
-                };
+            for fo in self.file_links[*f].outgoing_links.iter() {
+                let co = self.file_components[*fo];
                 if co != c {
                     outgoing
                         .entry(co)
@@ -224,44 +230,6 @@ impl Project {
         }
 
         (incoming, outgoing)
-    }
-
-    fn assign_files_to_components(&mut self) {
-        for (i_file, file) in self.files.iter_mut().enumerate() {
-            // Iterate over prefixes of file path, to find the most specific component.
-            // Assign to the most specific component.
-            // Example: file path: "a/b/header.hpp"
-            // candidate 1: a/b
-            // candidate 2: a
-            // candidate 3: ''
-            let mut path = file.path.clone();
-            let mut found = false;
-            for (idx, _) in file.path.rmatch_indices('/') {
-                path.truncate(idx);
-                if let Some((i, c)) = self
-                    .components
-                    .iter_mut()
-                    .enumerate()
-                    .find(|(_, c)| c.path == path)
-                {
-                    file.component = Some(i);
-                    c.files.push(i_file);
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                if let Some((i, c)) = self
-                    .components
-                    .iter_mut()
-                    .enumerate()
-                    .find(|(_, c)| c.path.is_empty())
-                {
-                    file.component = Some(i);
-                    c.files.push(i_file);
-                }
-            }
-        }
     }
 
     fn generate_file_deps(&mut self, options: &Opt) {
@@ -283,19 +251,18 @@ impl Project {
         }
 
         for i_file in 0..self.files.len() {
-            let include_paths = self.files[i_file].include_paths.clone(); // TODO: get rid of this?
-            for include in include_paths.iter() {
+            for include in self.files[i_file].include_paths.iter() {
                 let deps = path_to_files.get(include);
                 if let Some(deps) = deps {
                     // If a file can be included from the current solution, assume that it is.
                     // This avoids adding dependencies to headers with name clashes (like StdAfx.h).
                     let is_present_in_this_component = deps
                         .iter()
-                        .any(|f| self.file(*f).component == self.files[i_file].component);
+                        .any(|f| self.file_components[*f] == self.file_components[i_file]);
                     if !is_present_in_this_component {
                         for dep in deps.iter() {
-                            self.files[i_file].outgoing_links.push(*dep);
-                            self.files[*dep].incoming_links.push(i_file);
+                            self.file_links[i_file].outgoing_links.push(*dep);
+                            self.file_links[*dep].incoming_links.push(i_file);
                         }
                     }
                 } else if options.warn_missing {
@@ -309,110 +276,6 @@ impl Project {
     }
 }
 
-fn read_files(options: &Opt) -> io::Result<Project> {
-    let source_suffixes = [".cpp", ".hpp", ".c", ".h"];
-    //let ignore_patterns = [".svn", "dev/tools"];
-
-    let root_path = options.root.replace('\\', "/");
-    let root_path = root_path.trim_end_matches('/');
-
-    let project = std::sync::Arc::new(std::sync::Mutex::new(Project {
-        root: root_path.into(),
-        files: Vec::new(),
-        components: Vec::new(),
-    }));
-
-    let warn_malformed = options.warn_malformed;
-
-    ignore::WalkBuilder::new(root_path.to_owned())
-        .threads(6)
-        .build_parallel()
-        .run(|| {
-            Box::new({
-                let project = project.clone();
-                move |result: std::result::Result<ignore::DirEntry, ignore::Error>| {
-                    match result {
-                        Ok(entry) => {
-                            let path_str = entry
-                                .path()
-                                .to_str()
-                                .expect("failed to parse file name")
-                                .replace('\\', "/");
-                            if entry.path().ends_with("CMakeLists.txt") {
-                                let path = path_str.trim_end_matches("/CMakeLists.txt");
-                                let mut project = project.lock().unwrap();
-                                let path = project.rel_path(path).to_string();
-                                project.components.push(Component {
-                                    path,
-                                    files: vec![],
-                                });
-                            } else if source_suffixes.iter().any(|s| path_str.ends_with(s)) {
-                                match extract_includes(&entry.path(), warn_malformed) {
-                                    Ok(include_paths) => {
-                                        let mut project = project.lock().unwrap();
-                                        let path = project.rel_path(&path_str).to_string();
-                                        project.files.push(File {
-                                            path,
-                                            component: None,
-                                            include_paths,
-                                            incoming_links: vec![],
-                                            outgoing_links: vec![],
-                                        })
-                                    }
-                                    Err(e) => println!("Error while parsing {}: {}", path_str, e),
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!("Failed to parse file: {}", e);
-                        }
-                    }
-                    ignore::WalkState::Continue
-                }
-            })
-        });
-
-    let lock = std::sync::Arc::try_unwrap(project).unwrap();
-    Ok(lock.into_inner().unwrap())
-}
-
-fn extract_includes(path: &Path, warn_malformed: bool) -> io::Result<Vec<String>> {
-    let mut results = Vec::new();
-    let mut f = std::fs::File::open(path)?;
-    let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes)?;
-
-    for cap in INCLUDE_RE.captures_iter(&bytes) {
-        let mut include = String::from_utf8_lossy(&cap[1]).replace('\\', "/");
-        if let Some(idx) = include.rfind("../") {
-            if warn_malformed {
-                println!("malformed include in {:?}: {}", path, include);
-            }
-            include = include.split_off(idx + 3);
-        }
-        results.push(include);
-    }
-
-    if results.is_empty() {
-        for cap in INCLUDE_RE_16.captures_iter(&bytes) {
-            let include_bytes: Vec<u16> = cap[1]
-                .chunks_exact(2)
-                .map(|a| u16::from_ne_bytes([a[0], a[1]]))
-                .collect();
-            let mut include = String::from_utf16_lossy(&include_bytes).replace('\\', "/");
-            if let Some(idx) = include.rfind("../") {
-                if warn_malformed {
-                    println!("malformed include in {:?}: {}", path, include);
-                }
-                include = include.split_off(idx + 3);
-            }
-            results.push(include);
-        }
-    }
-
-    Ok(results)
-}
-
 fn show_sccs(project: &Project) {
     let sccs = Tarjan::run(project);
 
@@ -420,7 +283,7 @@ fn show_sccs(project: &Project) {
         scc.reverse();
         println!("Strongly Connected:");
         for c_ref in scc {
-            println!("  {}", project.component(c_ref).nice_name());
+            println!("  {}", project.components[c_ref].nice_name());
         }
     }
 }
@@ -467,19 +330,11 @@ impl Tarjan {
         self.on_stack[v] = true;
 
         // Consider successors of v
-        for w in project
-            .component(v)
-            .files
+        for w in project.component_files[v]
             .iter()
-            .flat_map(|f| &project.file(*f).outgoing_links)
-            .filter(|f| project.file(**f).component != Some(v))
-            .filter_map(|f| {
-                let f = project.file(*f);
-                /*if f.component.is_none() {
-                    println!("unassigned file: {}", f.path);
-                }*/
-                f.component
-            })
+            .flat_map(|&f| &project.file_links[f].outgoing_links)
+            .map(|f| project.file_components[*f])
+            .filter(|&c| c != v)
         {
             if self.indices[w] == -1 {
                 // Successor w has not yet been visited; recurse on it
@@ -724,12 +579,14 @@ fn get_dependencies_and_edge_descriptions(
 ) -> (Vec<String>, Vec<Vec<String>>) {
     let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
     let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
-        project.component(*a).path.cmp(&project.component(*b).path)
+        project.components[*a]
+            .path
+            .cmp(&project.components[*b].path)
     };
     sorted_keys.sort_by(sort_fn);
     let dep_names = sorted_keys
         .iter()
-        .map(|&c_ref| project.component(c_ref).nice_name().into())
+        .map(|&c_ref| project.components[c_ref].nice_name().into())
         .collect();
     let files = sorted_keys
         .into_iter()
@@ -739,8 +596,7 @@ fn get_dependencies_and_edge_descriptions(
                 .map(|e| {
                     format!(
                         "{} -> {}",
-                        project.file(e.from).path,
-                        project.file(e.to).path
+                        project.files[e.from].path, project.files[e.to].path
                     )
                 })
                 .collect()
