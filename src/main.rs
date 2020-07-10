@@ -47,8 +47,8 @@ enum Cmd {
         component_to: Option<String>,
 
         /// show files for dependencies
-        #[structopt(long)]
-        show_files: bool,
+        #[structopt(long, short)]
+        verbose: bool,
     },
     /// show terminal UI
     UI {},
@@ -71,8 +71,8 @@ fn main() -> Result<(), failure::Error> {
         Cmd::Links {
             component_from,
             component_to,
-            show_files,
-        } => project.print_components(component_from, component_to, show_files),
+            verbose,
+        } => project.print_components(component_from, component_to, verbose),
         Cmd::UI {} => show_ui(&project)?,
         Cmd::Scc {} => show_sccs(&project),
         Cmd::Shortest {

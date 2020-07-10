@@ -47,22 +47,17 @@ impl Graph {
         &self,
         component_from: Option<String>,
         component_to: Option<String>,
-        show_files: bool,
+        verbose: bool,
     ) {
         for (c_ref, c) in self.components.iter().enumerate() {
             let c_name = c.nice_name();
             if component_from.as_ref().map(|f| f == c_name).unwrap_or(true) {
-                self.print_component(c_ref, &component_to, show_files);
+                self.print_component(c_ref, &component_to, verbose);
             }
         }
     }
 
-    pub fn print_component(
-        &self,
-        c: ComponentRef,
-        component_to: &Option<String>,
-        show_files: bool,
-    ) {
+    pub fn print_component(&self, c: ComponentRef, component_to: &Option<String>, verbose: bool) {
         println!(
             "{} ({})",
             self.components[c].nice_name(),
@@ -81,7 +76,7 @@ impl Graph {
                 let name = self.components[c_ref].nice_name();
                 if component_to.as_ref().map(|t| t == name).unwrap_or(true) {
                     println!("    {}", name);
-                    if show_files {
+                    if verbose {
                         for e in &deps[&c_ref] {
                             println!(
                                 "      {} -> {}",
