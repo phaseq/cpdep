@@ -6,7 +6,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use graph::{ComponentRef, Edge, Project};
+use graph::{ComponentRef, Edge, Graph};
 use std::collections::HashMap;
 use std::io::{stdout, Write};
 use std::sync::mpsc;
@@ -54,6 +54,13 @@ enum Cmd {
     UI {},
     /// show all strongly connected components
     Scc {},
+    /// list the shortest path from component A to B
+    Shortest {
+        component_from: String,
+        component_to: String,
+        #[structopt(long, short)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<(), failure::Error> {
@@ -68,12 +75,17 @@ fn main() -> Result<(), failure::Error> {
         } => project.print_components(component_from, component_to, show_files),
         Cmd::UI {} => show_ui(&project)?,
         Cmd::Scc {} => show_sccs(&project),
+        Cmd::Shortest {
+            component_from,
+            component_to,
+            verbose,
+        } => project.print_shortest(&component_from, &component_to, verbose),
     }
 
     Ok(())
 }
 
-fn show_sccs(project: &Project) {
+fn show_sccs(project: &Graph) {
     let sccs = Tarjan::run(project);
 
     for mut scc in sccs.into_iter().filter(|c| c.len() > 1) {
@@ -95,7 +107,7 @@ struct Tarjan {
 }
 
 impl Tarjan {
-    fn run(project: &Project) -> Vec<Vec<ComponentRef>> {
+    fn run(project: &Graph) -> Vec<Vec<ComponentRef>> {
         let mut t = Tarjan {
             index: 0,
             indices: std::iter::repeat(-1)
@@ -118,7 +130,7 @@ impl Tarjan {
         t.sccs
     }
 
-    fn strong_connect(&mut self, v: ComponentRef, project: &Project) {
+    fn strong_connect(&mut self, v: ComponentRef, project: &Graph) {
         // Set the depth index for v to the smallest unused index
         self.indices[v] = self.index;
         self.lowlink[v] = self.index;
@@ -210,7 +222,7 @@ enum Event<I> {
     Input(I),
 }
 
-fn show_ui(project: &Project) -> Result<(), failure::Error> {
+fn show_ui(project: &Graph) -> Result<(), failure::Error> {
     let project_names: Vec<&str> = project.components.iter().map(|c| c.nice_name()).collect();
     let mut sorted_projects: Vec<(usize, &str)> = project_names
         .iter()
@@ -371,7 +383,7 @@ fn show_ui(project: &Project) -> Result<(), failure::Error> {
 }
 
 fn get_dependencies_and_edge_descriptions(
-    project: &Project,
+    project: &Graph,
     deps: HashMap<ComponentRef, Vec<Edge>>,
 ) -> (Vec<String>, Vec<Vec<String>>) {
     let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();

@@ -2,7 +2,7 @@ use crate::file_collector::{self, Component, File};
 use crate::Opt;
 use std::collections::HashMap;
 
-pub struct Project {
+pub struct Graph {
     pub files: Vec<File>,
     pub components: Vec<Component>,
     pub file_components: Vec<ComponentRef>,
@@ -24,7 +24,7 @@ pub struct Edge {
     pub to: FileRef,
 }
 
-pub fn load(options: &crate::Opt) -> Project {
+pub fn load(options: &crate::Opt) -> Graph {
     let base_project = file_collector::read_files(&options);
     let file_components = files_to_components(&base_project);
     let mut component_files = vec![vec![]; base_project.components.len()];
@@ -33,7 +33,7 @@ pub fn load(options: &crate::Opt) -> Project {
     }
     let file_links = generate_file_links(&base_project.files, &file_components, &options);
 
-    Project {
+    Graph {
         files: base_project.files,
         components: base_project.components,
         file_components,
@@ -42,7 +42,7 @@ pub fn load(options: &crate::Opt) -> Project {
     }
 }
 
-impl Project {
+impl Graph {
     pub fn print_components(
         &self,
         component_from: Option<String>,
@@ -98,6 +98,75 @@ impl Project {
 
         println!("  Outgoing:");
         print_deps(dep_out);
+    }
+
+    pub fn print_shortest(&self, component_from: &str, component_to: &str, verbose: bool) {
+        let c_from = match self.component_name_to_ref(component_from) {
+            Some(c) => c,
+            None => {
+                eprintln!("component not found: {}", component_from);
+                std::process::exit(1);
+            }
+        };
+        let c_to = match self.component_name_to_ref(component_to) {
+            Some(c) => c,
+            None => {
+                eprintln!("component not found: {}", component_from);
+                std::process::exit(1);
+            }
+        };
+
+        let mut dists = vec![(0usize, u32::max_value()); self.components.len()];
+        dists[c_from] = (c_from, 0);
+
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(c_from);
+
+        while let Some(c_from) = queue.pop_front() {
+            let dist = dists[c_from].1 + 1;
+
+            for f in self.component_files[c_from].iter() {
+                for fo in self.file_links[*f].outgoing_links.iter() {
+                    let c = self.file_components[*fo];
+                    if dists[c].1 > dist {
+                        dists[c] = (c_from, dist);
+                        queue.push_back(c);
+                    }
+                }
+            }
+        }
+
+        let mut result = vec![];
+        let mut c = c_to;
+        while c != c_from {
+            result.push(c);
+            c = dists[c].0;
+        }
+        result.push(c_from);
+        result.reverse();
+
+        for i in 0..result.len() {
+            let c = result[i];
+            println!("{}", self.components[c].nice_name());
+            if verbose && i + 1 != result.len() {
+                let c2 = result[i + 1];
+                for f in self.component_files[c].iter() {
+                    for fo in self.file_links[*f].outgoing_links.iter() {
+                        if self.file_components[*fo] == c2 {
+                            println!("  {} -> {}", self.files[*f].path, self.files[*fo].path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn component_name_to_ref(&self, component_from: &str) -> Option<ComponentRef> {
+        self.components
+            .iter()
+            .enumerate()
+            .find(|(_i, c)| c.nice_name() == component_from)
+            .map(|(i, _)| i)
     }
 
     pub fn linked_components(
