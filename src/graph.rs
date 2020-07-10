@@ -136,6 +136,11 @@ impl Graph {
             }
         }
 
+        if dists[c_to].1 == u32::max_value() {
+            println!("No path found.");
+            return;
+        }
+
         let mut result = vec![];
         let mut c = c_to;
         while c != c_from {
