@@ -95,7 +95,39 @@ impl Graph {
         print_deps(dep_out);
     }
 
-    pub fn print_shortest(&self, component_from: &str, component_to: &str, verbose: bool) {
+    pub fn print_file_info(&self, file_name: &str) {
+        let file = match self
+            .files
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.path == file_name)
+        {
+            Some(f) => f,
+            None => {
+                eprintln!("file not found: {}", file_name);
+                std::process::exit(1);
+            }
+        };
+        let (f_ref, _f) = file;
+
+        println!("Incoming:");
+        for &fi in &self.file_links[f_ref].incoming_links {
+            println!("  {}", self.files[fi].path);
+        }
+
+        println!("Outgoing:");
+        for &fo in &self.file_links[f_ref].outgoing_links {
+            println!("  {}", self.files[fo].path);
+        }
+    }
+
+    pub fn print_shortest(
+        &self,
+        component_from: &str,
+        component_to: &str,
+        verbose: bool,
+        only_public: bool,
+    ) {
         let c_from = match self.component_name_to_ref(component_from) {
             Some(c) => c,
             None => {
@@ -117,14 +149,17 @@ impl Graph {
         let mut queue = std::collections::VecDeque::new();
         queue.push_back(c_from);
 
-        while let Some(c_from) = queue.pop_front() {
-            let dist = dists[c_from].1 + 1;
+        while let Some(c_source) = queue.pop_front() {
+            let dist = dists[c_source].1 + 1;
 
-            for f in self.component_files[c_from].iter() {
+            for f in self.component_files[c_source].iter() {
+                if c_source == c_from && only_public && !self.has_incoming_links(*f) {
+                    continue;
+                }
                 for fo in self.file_links[*f].outgoing_links.iter() {
                     let c = self.file_components[*fo];
                     if dists[c].1 > dist {
-                        dists[c] = (c_from, dist);
+                        dists[c] = (c_source, dist);
                         queue.push_back(c);
                     }
                 }
@@ -151,6 +186,9 @@ impl Graph {
             if verbose && i + 1 != result.len() {
                 let c2 = result[i + 1];
                 for f in self.component_files[c].iter() {
+                    if c == c_from && only_public && !self.has_incoming_links(*f) {
+                        continue;
+                    }
                     for fo in self.file_links[*f].outgoing_links.iter() {
                         if self.file_components[*fo] == c2 {
                             println!("  {} -> {}", self.files[*f].path, self.files[*fo].path);
@@ -159,6 +197,21 @@ impl Graph {
                 }
             }
         }
+    }
+
+    fn has_incoming_links(&self, file_ref: FileRef) -> bool {
+        let c = self.file_components[file_ref];
+        for fi in &self.file_links[file_ref].incoming_links {
+            let ci = self.file_components[*fi];
+            if ci != c {
+                /*println!(
+                    "il {} -> {}",
+                    self.files[*fi].path, self.files[file_ref].path
+                );*/
+                return true;
+            }
+        }
+        false
     }
 
     fn component_name_to_ref(&self, component_from: &str) -> Option<ComponentRef> {

@@ -50,6 +50,8 @@ enum Cmd {
         #[structopt(long, short)]
         verbose: bool,
     },
+    /// show incoming and outgoing links for the given file
+    File { file_name: String },
     /// show terminal UI
     UI {},
     /// show all strongly connected components
@@ -60,6 +62,10 @@ enum Cmd {
         component_to: String,
         #[structopt(long, short)]
         verbose: bool,
+
+        // only list paths reachable via public header files of A
+        #[structopt(long)]
+        only_public: bool,
     },
 }
 
@@ -68,18 +74,20 @@ fn main() -> Result<(), failure::Error> {
     let project = graph::load(&options);
 
     match options.cmd {
-        Cmd::Links {
+        Cmd::Component {
             component_from,
             component_to,
             verbose,
         } => project.print_components(component_from, component_to, verbose),
+        Cmd::File { file_name } => project.print_file_info(&file_name),
         Cmd::UI {} => show_ui(&project)?,
         Cmd::Scc {} => show_sccs(&project),
         Cmd::Shortest {
             component_from,
             component_to,
             verbose,
-        } => project.print_shortest(&component_from, &component_to, verbose),
+            only_public,
+        } => project.print_shortest(&component_from, &component_to, verbose, only_public),
     }
 
     Ok(())
