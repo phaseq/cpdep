@@ -50,6 +50,12 @@ enum Cmd {
         #[structopt(long, short)]
         verbose: bool,
     },
+    /// show which headers are public and which are private
+    Headers {
+        component: String,
+        #[structopt(long, short)]
+        verbose: bool,
+    },
     /// show incoming and outgoing links for the given file
     File { file_name: String },
     /// show terminal UI
@@ -80,6 +86,7 @@ fn main() -> Result<(), failure::Error> {
             verbose,
         } => project.print_components(component_from, component_to, verbose),
         Cmd::File { file_name } => project.print_file_info(&file_name),
+        Cmd::Headers { component, verbose } => project.print_headers(component, verbose),
         Cmd::UI {} => show_ui(&project)?,
         Cmd::Scc {} => show_sccs(&project),
         Cmd::Shortest {

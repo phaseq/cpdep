@@ -95,6 +95,51 @@ impl Graph {
         print_deps(dep_out);
     }
 
+    pub fn print_headers(&self, component_name: String, verbose: bool) {
+        let (c_ref, _c) = match self
+            .components
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.nice_name() == component_name)
+        {
+            Some(c) => c,
+            None => {
+                eprintln!("component not found: {}", component_name);
+                std::process::exit(1);
+            }
+        };
+
+        let mut public_files = vec![];
+        let mut private_files = vec![];
+        for &f in &self.component_files[c_ref] {
+            let links = self.get_incoming_links(f);
+            if !links.is_empty() {
+                public_files.push((f, links));
+            } else {
+                if !self.is_source_file(f) {
+                    private_files.push(f);
+                }
+            }
+        }
+
+        println!("Public files:");
+        public_files.sort_by(|&(f1, _), &(f2, _)| self.files[f1].path.cmp(&self.files[f2].path));
+        for (f, incoming_links) in &public_files {
+            println!("  {}", self.files[*f].path);
+            if verbose {
+                for &fi in incoming_links {
+                    println!("    <- {}", self.files[fi].path);
+                }
+            }
+        }
+
+        println!("Private headers:");
+        private_files.sort_by(|&f1, &f2| self.files[f1].path.cmp(&self.files[f2].path));
+        for &f in &private_files {
+            println!("  {}", self.files[f].path);
+        }
+    }
+
     pub fn print_file_info(&self, file_name: &str) {
         let file = match self
             .files
@@ -201,17 +246,35 @@ impl Graph {
 
     fn has_incoming_links(&self, file_ref: FileRef) -> bool {
         let c = self.file_components[file_ref];
-        for fi in &self.file_links[file_ref].incoming_links {
-            let ci = self.file_components[*fi];
-            if ci != c {
-                /*println!(
-                    "il {} -> {}",
-                    self.files[*fi].path, self.files[file_ref].path
-                );*/
+        for &fi in &self.file_links[file_ref].incoming_links {
+            let ci = self.file_components[fi];
+            if ci != c || self.is_header(fi) {
                 return true;
             }
         }
         false
+    }
+
+    fn get_incoming_links(&self, file_ref: FileRef) -> Vec<FileRef> {
+        let mut links = vec![];
+        let c = self.file_components[file_ref];
+        for &fi in &self.file_links[file_ref].incoming_links {
+            let ci = self.file_components[fi];
+            if ci != c || self.is_header(fi) {
+                links.push(fi);
+            }
+        }
+        links
+    }
+
+    fn is_header(&self, file_ref: FileRef) -> bool {
+        let path = &self.files[file_ref].path;
+        path.ends_with(".h") || path.ends_with(".hpp") || path.ends_with("hxx")
+    }
+
+    fn is_source_file(&self, file_ref: FileRef) -> bool {
+        let path = &self.files[file_ref].path;
+        path.ends_with(".cpp") || path.ends_with(".c")
     }
 
     fn component_name_to_ref(&self, component_from: &str) -> Option<ComponentRef> {
@@ -321,16 +384,19 @@ fn generate_file_links(
         for include in file.include_paths.iter() {
             let deps = path_to_files.get(include);
             if let Some(deps) = deps {
-                // If a file can be included from the current solution, assume that it is.
-                // This avoids adding dependencies to headers with name clashes (like StdAfx.h).
                 let is_present_in_this_component = deps
                     .iter()
                     .any(|f| file_components[*f] == file_components[i_file]);
-                if !is_present_in_this_component {
-                    for dep in deps.iter() {
-                        file_links[i_file].outgoing_links.push(*dep);
-                        file_links[*dep].incoming_links.push(i_file);
+                for &dep in deps.iter() {
+                    if is_present_in_this_component
+                        && file_components[dep] != file_components[i_file]
+                    {
+                        // If a file can be included from the current solution, assume that it is.
+                        // This avoids adding dependencies to headers with name clashes (like StdAfx.h).
+                        continue;
                     }
+                    file_links[i_file].outgoing_links.push(dep);
+                    file_links[dep].incoming_links.push(i_file);
                 }
             } else if options.warn_missing {
                 println!("include not found in {}: {}", file.path, include);
