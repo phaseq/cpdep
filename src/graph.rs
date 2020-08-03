@@ -109,34 +109,57 @@ impl Graph {
             }
         };
 
-        let mut public_files = vec![];
-        let mut private_files = vec![];
-        for &f in &self.component_files[c_ref] {
-            let links = self.get_incoming_links(f);
-            if !links.is_empty() {
-                public_files.push((f, links));
-            } else {
-                if !self.is_source_file(f) {
-                    private_files.push(f);
+        let mut public_headers = vec![];
+        let mut transitive_headers = vec![];
+        let mut private_headers = vec![];
+        let mut dead_headers = vec![];
+        for &file_ref in &self.component_files[c_ref] {
+            let links = &self.file_links[file_ref].incoming_links;
+            let c = self.file_components[file_ref];
+            let public_links: Vec<FileRef> = links
+                .into_iter()
+                .filter(|&f_ref| self.file_components[*f_ref] != c)
+                .cloned()
+                .collect();
+            let maybe_public_links: Vec<FileRef> = links
+                .into_iter()
+                .filter(|&f_ref| self.file_components[*f_ref] == c && self.is_header(*f_ref))
+                .cloned()
+                .collect();
+
+            if !public_links.is_empty() {
+                public_headers.push((file_ref, public_links));
+            } else if !maybe_public_links.is_empty() {
+                transitive_headers.push((file_ref, maybe_public_links));
+            } else if self.is_header(file_ref) {
+                if !links.is_empty() {
+                    private_headers.push((file_ref, vec![]));
+                } else {
+                    dead_headers.push((file_ref, vec![]));
                 }
             }
         }
 
-        println!("Public files:");
-        public_files.sort_by(|&(f1, _), &(f2, _)| self.files[f1].path.cmp(&self.files[f2].path));
-        for (f, incoming_links) in &public_files {
-            println!("  {}", self.files[*f].path);
-            if verbose {
-                for &fi in incoming_links {
-                    println!("    <- {}", self.files[fi].path);
+        let mut sections = [
+            ("Public", public_headers),
+            ("Transitive", transitive_headers),
+            ("Private", private_headers),
+            ("Dead", dead_headers),
+        ];
+        for (title, headers) in sections.iter_mut() {
+            if headers.is_empty() {
+                continue;
+            }
+            println!("{} headers:", title);
+            headers.sort_by(|&(f1, _), &(f2, _)| self.files[f1].path.cmp(&self.files[f2].path));
+            for (f, incoming_links) in headers {
+                println!("  {}", self.files[*f].path);
+                if verbose {
+                    for &fi in &*incoming_links {
+                        println!("    <- {}", self.files[fi].path);
+                    }
                 }
             }
-        }
-
-        println!("Private headers:");
-        private_files.sort_by(|&f1, &f2| self.files[f1].path.cmp(&self.files[f2].path));
-        for &f in &private_files {
-            println!("  {}", self.files[f].path);
         }
     }
 
@@ -253,18 +276,6 @@ impl Graph {
             }
         }
         false
-    }
-
-    fn get_incoming_links(&self, file_ref: FileRef) -> Vec<FileRef> {
-        let mut links = vec![];
-        let c = self.file_components[file_ref];
-        for &fi in &self.file_links[file_ref].incoming_links {
-            let ci = self.file_components[fi];
-            if ci != c || self.is_header(fi) {
-                links.push(fi);
-            }
-        }
-        links
     }
 
     fn is_header(&self, file_ref: FileRef) -> bool {
