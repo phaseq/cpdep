@@ -51,23 +51,30 @@ impl Graph {
         component_from: Option<String>,
         component_to: Option<String>,
         verbose: bool,
+        only_public: bool,
     ) {
         for (c_ref, c) in self.components.iter().enumerate() {
             let c_name = c.nice_name();
             if component_from.as_ref().map(|f| f == c_name).unwrap_or(true) {
-                self.print_component(c_ref, &component_to, verbose);
+                self.print_component(c_ref, &component_to, verbose, only_public);
             }
         }
     }
 
-    pub fn print_component(&self, c: ComponentRef, component_to: &Option<String>, verbose: bool) {
+    pub fn print_component(
+        &self,
+        c: ComponentRef,
+        component_to: &Option<String>,
+        verbose: bool,
+        only_public: bool,
+    ) {
         println!(
             "{} ({})",
             self.components[c].nice_name(),
             self.component_files[c].len()
         );
 
-        let (dep_in, dep_out) = self.linked_components(c);
+        let (dep_in, dep_out) = self.linked_components(c, only_public);
 
         let print_deps = |deps: HashMap<ComponentRef, Vec<Edge>>| {
             let mut sorted_keys: Vec<ComponentRef> = deps.keys().cloned().collect();
@@ -330,29 +337,34 @@ impl Graph {
     pub fn linked_components(
         &self,
         c: ComponentRef,
+        only_public: bool,
     ) -> (
         HashMap<ComponentRef, Vec<Edge>>,
         HashMap<ComponentRef, Vec<Edge>>,
     ) {
         let mut incoming: HashMap<ComponentRef, Vec<Edge>> = HashMap::new();
         let mut outgoing: HashMap<ComponentRef, Vec<Edge>> = HashMap::new();
-        for f in self.component_files[c].iter() {
-            for fo in self.file_links[*f].incoming_links.iter() {
-                let co = self.file_components[*fo];
-                if co != c {
-                    incoming
-                        .entry(co)
-                        .or_default()
-                        .push(Edge { from: *fo, to: *f })
+        for &f in self.component_files[c].iter() {
+            for &fi in self.file_links[f].incoming_links.iter() {
+                if !only_public || self.file_is_public[fi] {
+                    let co = self.file_components[fi];
+                    if co != c {
+                        incoming
+                            .entry(co)
+                            .or_default()
+                            .push(Edge { from: fi, to: f })
+                    }
                 }
             }
-            for fo in self.file_links[*f].outgoing_links.iter() {
-                let co = self.file_components[*fo];
-                if co != c {
-                    outgoing
-                        .entry(co)
-                        .or_default()
-                        .push(Edge { from: *f, to: *fo })
+            if !only_public || self.file_is_public[f] {
+                for &fo in self.file_links[f].outgoing_links.iter() {
+                    let co = self.file_components[fo];
+                    if co != c {
+                        outgoing
+                            .entry(co)
+                            .or_default()
+                            .push(Edge { from: f, to: fo })
+                    }
                 }
             }
         }

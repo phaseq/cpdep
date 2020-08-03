@@ -39,7 +39,7 @@ pub struct Opt {
 #[derive(StructOpt)]
 enum Cmd {
     // show direct links between components
-    Links {
+    Component {
         /// show incoming and outgoing links for this component
         component_from: Option<String>,
 
@@ -49,6 +49,9 @@ enum Cmd {
         /// show files for dependencies
         #[structopt(long, short)]
         verbose: bool,
+
+        #[structopt(long)]
+        only_public: bool,
     },
     /// show which headers are public and which are private
     Headers {
@@ -80,11 +83,12 @@ fn main() -> Result<(), failure::Error> {
     let project = graph::load(&options);
 
     match options.cmd {
-        Cmd::Links {
+        Cmd::Component {
             component_from,
             component_to,
             verbose,
-        } => project.print_components(component_from, component_to, verbose),
+            only_public,
+        } => project.print_components(component_from, component_to, verbose, only_public),
         Cmd::File { file_name } => project.print_file_info(&file_name),
         Cmd::Headers { component, verbose } => project.print_headers(component, verbose),
         Cmd::UI {} => show_ui(&project)?,
@@ -193,6 +197,7 @@ struct Gui {
     sel_column: usize,
     columns: [Column; 3],
     show_incoming_links: bool,
+    show_only_public: bool,
 }
 
 impl Gui {
@@ -283,12 +288,14 @@ fn show_ui(project: &Graph) -> Result<(), failure::Error> {
             Column::new(vec![]),
         ],
         show_incoming_links: true,
+        show_only_public: false,
     };
 
     loop {
         if gui.invalid {
             let (dep_in, dep_out) = project.linked_components(
                 sorted_projects[gui.columns[0].list_state.selected().unwrap_or(0)].0,
+                gui.show_only_public,
             );
 
             let (deps, files) = if gui.show_incoming_links {
@@ -332,7 +339,8 @@ fn show_ui(project: &Graph) -> Result<(), failure::Error> {
                     0 => "Component (navigate with arrow/page keys)",
                     1 if gui.show_incoming_links => "Incoming (press o for outgoing)",
                     1 => "Outgoing (press i for incoming)",
-                    2 => "Files",
+                    2 if gui.show_only_public => "Files (showing public references, toggle with p)",
+                    2 => "Files (showing all references, toggle with p)",
                     _ => unreachable!(),
                 };
                 let items = gui.columns[i].items.iter().map(|i| Text::raw(i.clone()));
@@ -362,6 +370,10 @@ fn show_ui(project: &Graph) -> Result<(), failure::Error> {
                 KeyCode::Char('o') => {
                     gui.columns[1].list_state.select(Some(0));
                     gui.show_incoming_links = false;
+                }
+                KeyCode::Char('p') => {
+                    gui.columns[1].list_state.select(Some(0));
+                    gui.show_only_public = !gui.show_only_public;
                 }
                 KeyCode::Up => {
                     gui.on_up();
