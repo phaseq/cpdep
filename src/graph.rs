@@ -291,29 +291,18 @@ impl Graph {
             println!("{}", self.components[c].nice_name());
             if verbose && i + 1 != result.len() {
                 let c2 = result[i + 1];
-                for f in self.component_files[c].iter() {
-                    if c == c_from && only_public && !self.has_incoming_links(*f) {
+                for &f in self.component_files[c].iter() {
+                    if c == c_from && only_public && !self.file_is_public[f] {
                         continue;
                     }
-                    for fo in self.file_links[*f].outgoing_links.iter() {
-                        if self.file_components[*fo] == c2 {
-                            println!("  {} -> {}", self.files[*f].path, self.files[*fo].path);
+                    for &fo in self.file_links[f].outgoing_links.iter() {
+                        if self.file_components[fo] == c2 {
+                            println!("  {} -> {}", self.files[f].path, self.files[fo].path);
                         }
                     }
                 }
             }
         }
-    }
-
-    fn has_incoming_links(&self, file_ref: FileRef) -> bool {
-        let c = self.file_components[file_ref];
-        for &fi in &self.file_links[file_ref].incoming_links {
-            let ci = self.file_components[fi];
-            if ci != c || self.is_header(fi) {
-                return true;
-            }
-        }
-        false
     }
 
     fn is_header(&self, file_ref: FileRef) -> bool {
