@@ -74,7 +74,7 @@ fn main() -> Result<(), failure::Error> {
     let project = graph::load(&options);
 
     match options.cmd {
-        Cmd::Component {
+        Cmd::Links {
             component_from,
             component_to,
             verbose,
