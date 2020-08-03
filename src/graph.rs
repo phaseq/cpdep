@@ -8,6 +8,7 @@ pub struct Graph {
     pub file_components: Vec<ComponentRef>,
     pub component_files: Vec<Vec<FileRef>>,
     pub file_links: Vec<FileLinks>,
+    pub file_is_public: Vec<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -32,6 +33,7 @@ pub fn load(options: &crate::Opt) -> Graph {
         component_files[c].push(i);
     }
     let file_links = generate_file_links(&base_project.files, &file_components, &options);
+    let file_is_public = generate_is_public(&file_links, &file_components);
 
     Graph {
         files: base_project.files,
@@ -39,6 +41,7 @@ pub fn load(options: &crate::Opt) -> Graph {
         file_components,
         component_files,
         file_links,
+        file_is_public,
     }
 }
 
@@ -67,7 +70,7 @@ impl Graph {
         let (dep_in, dep_out) = self.linked_components(c);
 
         let print_deps = |deps: HashMap<ComponentRef, Vec<Edge>>| {
-            let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
+            let mut sorted_keys: Vec<ComponentRef> = deps.keys().cloned().collect();
             let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
                 self.components[*a].path.cmp(&self.components[*b].path)
             };
@@ -110,28 +113,22 @@ impl Graph {
         };
 
         let mut public_headers = vec![];
-        let mut transitive_headers = vec![];
         let mut private_headers = vec![];
         let mut dead_headers = vec![];
         for &file_ref in &self.component_files[c_ref] {
             let links = &self.file_links[file_ref].incoming_links;
             let c = self.file_components[file_ref];
             let public_links: Vec<FileRef> = links
-                .into_iter()
-                .filter(|&f_ref| self.file_components[*f_ref] != c)
+                .iter()
+                .filter(|&f_ref| self.file_components[*f_ref] != c || self.file_is_public[*f_ref])
                 .cloned()
                 .collect();
-            let maybe_public_links: Vec<FileRef> = links
-                .into_iter()
-                .filter(|&f_ref| self.file_components[*f_ref] == c && self.is_header(*f_ref))
-                .cloned()
-                .collect();
-
             if !public_links.is_empty() {
                 public_headers.push((file_ref, public_links));
-            } else if !maybe_public_links.is_empty() {
-                transitive_headers.push((file_ref, maybe_public_links));
-            } else if self.is_header(file_ref) {
+                continue;
+            }
+
+            if self.is_header(file_ref) {
                 if !links.is_empty() {
                     private_headers.push((file_ref, vec![]));
                 } else {
@@ -142,7 +139,6 @@ impl Graph {
 
         let mut sections = [
             ("Public", public_headers),
-            ("Transitive", transitive_headers),
             ("Private", private_headers),
             ("Dead", dead_headers),
         ];
@@ -162,6 +158,41 @@ impl Graph {
             }
         }
     }
+
+    /*pub fn shortest_path_to_public(&self, f_from: FileRef) -> Option<Vec<FileRef>> {
+        let c_from = self.file_components[f_from];
+
+        let mut dists = vec![(0usize, u32::max_value()); self.files.len()];
+        dists[f_from] = (f_from, 0);
+
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(f_from);
+
+        while let Some(f_source) = queue.pop_front() {
+            let dist = dists[f_source].1 + 1;
+
+            for &fi in self.file_links[f_source].incoming_links.iter() {
+                let c_to = self.file_components[fi];
+                if c_to != c_from {
+                    // found
+                    let mut result = vec![];
+                    let mut f = fi;
+                    while f != f_from {
+                        result.push(f);
+                        f = dists[f].0;
+                    }
+                    result.push(c_from);
+                    result.reverse();
+                    return Some(result);
+                }
+                if dists[fi].1 > dist {
+                    dists[fi] = (f_source, dist);
+                    queue.push_back(fi);
+                }
+            }
+        }
+        None
+    }*/
 
     pub fn print_file_info(&self, file_name: &str) {
         let file = match self
@@ -206,7 +237,7 @@ impl Graph {
         let c_to = match self.component_name_to_ref(component_to) {
             Some(c) => c,
             None => {
-                eprintln!("component not found: {}", component_from);
+                eprintln!("component not found: {}", component_to);
                 std::process::exit(1);
             }
         };
@@ -220,11 +251,11 @@ impl Graph {
         while let Some(c_source) = queue.pop_front() {
             let dist = dists[c_source].1 + 1;
 
-            for f in self.component_files[c_source].iter() {
-                if c_source == c_from && only_public && !self.has_incoming_links(*f) {
+            for &f in self.component_files[c_source].iter() {
+                if c_source == c_from && only_public && !self.file_is_public[f] {
                     continue;
                 }
-                for fo in self.file_links[*f].outgoing_links.iter() {
+                for fo in self.file_links[f].outgoing_links.iter() {
                     let c = self.file_components[*fo];
                     if dists[c].1 > dist {
                         dists[c] = (c_source, dist);
@@ -283,10 +314,10 @@ impl Graph {
         path.ends_with(".h") || path.ends_with(".hpp") || path.ends_with("hxx")
     }
 
-    fn is_source_file(&self, file_ref: FileRef) -> bool {
+    /*fn is_source_file(&self, file_ref: FileRef) -> bool {
         let path = &self.files[file_ref].path;
         path.ends_with(".cpp") || path.ends_with(".c")
-    }
+    }*/
 
     fn component_name_to_ref(&self, component_from: &str) -> Option<ComponentRef> {
         self.components
@@ -415,4 +446,29 @@ fn generate_file_links(
         }
     }
     file_links
+}
+
+fn generate_is_public(file_links: &[FileLinks], file_components: &[ComponentRef]) -> Vec<bool> {
+    let mut is_public = vec![false; file_links.len()];
+    let mut to_visit: std::collections::VecDeque<FileRef> = std::collections::VecDeque::new();
+
+    for (f, links) in file_links.iter().enumerate() {
+        for &fi in &links.outgoing_links {
+            if !is_public[fi] && file_components[fi] != file_components[f] {
+                is_public[fi] = true;
+                to_visit.push_back(fi);
+            }
+        }
+    }
+
+    while let Some(f) = to_visit.pop_front() {
+        for &fi in &file_links[f].outgoing_links {
+            if !is_public[fi] && file_components[fi] != file_components[f] {
+                is_public[fi] = true;
+                to_visit.push_back(fi);
+            }
+        }
+    }
+
+    is_public
 }
