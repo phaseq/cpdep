@@ -121,6 +121,7 @@ impl Graph {
 
         let mut public_headers = vec![];
         let mut private_headers = vec![];
+        let mut solo_headers = vec![];
         let mut dead_headers = vec![];
         for &file_ref in &self.component_files[c_ref] {
             let links = &self.file_links[file_ref].incoming_links;
@@ -137,6 +138,16 @@ impl Graph {
 
             if self.is_header(file_ref) {
                 if !links.is_empty() {
+                    if links.len() == 1 {
+                        let fi = links[0];
+                        let base_name = self.files[file_ref].path.rsplit("/").next().unwrap();
+                        if let Some(base_name) = base_name.rsplit(".").nth(1) {
+                            if self.files[fi].path.contains(base_name) {
+                                solo_headers.push((file_ref, vec![fi]));
+                                continue;
+                            }
+                        }
+                    }
                     private_headers.push((file_ref, vec![]));
                 } else {
                     dead_headers.push((file_ref, vec![]));
@@ -147,6 +158,7 @@ impl Graph {
         let mut sections = [
             ("Public", public_headers),
             ("Private", private_headers),
+            ("Solo", solo_headers),
             ("Dead", dead_headers),
         ];
         for (title, headers) in sections.iter_mut() {
