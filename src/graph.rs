@@ -46,138 +46,6 @@ pub fn load(options: &crate::Opt) -> Graph {
 }
 
 impl Graph {
-    pub fn print_components(
-        &self,
-        component_from: Option<String>,
-        component_to: Option<String>,
-        verbose: bool,
-        only_public: bool,
-    ) {
-        for (c_ref, c) in self.components.iter().enumerate() {
-            let c_name = c.nice_name();
-            if component_from.as_ref().map(|f| f == c_name).unwrap_or(true) {
-                self.print_component(c_ref, &component_to, verbose, only_public);
-            }
-        }
-    }
-
-    pub fn print_component(
-        &self,
-        c: ComponentRef,
-        component_to: &Option<String>,
-        verbose: bool,
-        only_public: bool,
-    ) {
-        println!(
-            "{} ({})",
-            self.components[c].nice_name(),
-            self.component_files[c].len()
-        );
-
-        let (dep_in, dep_out) = self.linked_components(c, only_public);
-
-        let print_deps = |deps: HashMap<ComponentRef, Vec<Edge>>| {
-            let mut sorted_keys: Vec<ComponentRef> = deps.keys().cloned().collect();
-            let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
-                self.components[*a].path.cmp(&self.components[*b].path)
-            };
-            sorted_keys.sort_by(sort_fn);
-            for c_ref in sorted_keys {
-                let name = self.components[c_ref].nice_name();
-                if component_to.as_ref().map(|t| t == name).unwrap_or(true) {
-                    println!("    {}", name);
-                    if verbose {
-                        for e in &deps[&c_ref] {
-                            println!(
-                                "      {} -> {}",
-                                self.files[e.from].path, self.files[e.to].path
-                            );
-                        }
-                    }
-                }
-            }
-        };
-
-        println!("  Incoming:");
-        print_deps(dep_in);
-
-        println!("  Outgoing:");
-        print_deps(dep_out);
-    }
-
-    pub fn print_headers(&self, component_name: String, verbose: bool) {
-        let (c_ref, _c) = match self
-            .components
-            .iter()
-            .enumerate()
-            .find(|(_, c)| c.nice_name() == component_name)
-        {
-            Some(c) => c,
-            None => {
-                eprintln!("component not found: {}", component_name);
-                std::process::exit(1);
-            }
-        };
-
-        let mut public_headers = vec![];
-        let mut private_headers = vec![];
-        let mut solo_headers = vec![];
-        let mut dead_headers = vec![];
-        for &file_ref in &self.component_files[c_ref] {
-            let links = &self.file_links[file_ref].incoming_links;
-            let c = self.file_components[file_ref];
-            let public_links: Vec<FileRef> = links
-                .iter()
-                .filter(|&f_ref| self.file_components[*f_ref] != c || self.file_is_public[*f_ref])
-                .cloned()
-                .collect();
-            if !public_links.is_empty() {
-                public_headers.push((file_ref, public_links));
-                continue;
-            }
-
-            if self.is_header(file_ref) {
-                if !links.is_empty() {
-                    if links.len() == 1 {
-                        let fi = links[0];
-                        let base_name = self.files[file_ref].path.rsplit("/").next().unwrap();
-                        if let Some(base_name) = base_name.rsplit(".").nth(1) {
-                            if self.files[fi].path.contains(base_name) {
-                                solo_headers.push((file_ref, vec![fi]));
-                                continue;
-                            }
-                        }
-                    }
-                    private_headers.push((file_ref, vec![]));
-                } else {
-                    dead_headers.push((file_ref, vec![]));
-                }
-            }
-        }
-
-        let mut sections = [
-            ("Public", public_headers),
-            ("Private", private_headers),
-            ("Solo", solo_headers),
-            ("Dead", dead_headers),
-        ];
-        for (title, headers) in sections.iter_mut() {
-            if headers.is_empty() {
-                continue;
-            }
-            println!("{} headers:", title);
-            headers.sort_by(|&(f1, _), &(f2, _)| self.files[f1].path.cmp(&self.files[f2].path));
-            for (f, incoming_links) in headers {
-                println!("  {}", self.files[*f].path);
-                if verbose {
-                    for &fi in &*incoming_links {
-                        println!("    <- {}", self.files[fi].path);
-                    }
-                }
-            }
-        }
-    }
-
     /*pub fn shortest_path_to_public(&self, f_from: FileRef) -> Option<Vec<FileRef>> {
         let c_from = self.file_components[f_from];
 
@@ -213,111 +81,7 @@ impl Graph {
         None
     }*/
 
-    pub fn print_file_info(&self, file_name: &str) {
-        let file = match self
-            .files
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.path == file_name)
-        {
-            Some(f) => f,
-            None => {
-                eprintln!("file not found: {}", file_name);
-                std::process::exit(1);
-            }
-        };
-        let (f_ref, _f) = file;
-
-        println!("Incoming:");
-        for &fi in &self.file_links[f_ref].incoming_links {
-            println!("  {}", self.files[fi].path);
-        }
-
-        println!("Outgoing:");
-        for &fo in &self.file_links[f_ref].outgoing_links {
-            println!("  {}", self.files[fo].path);
-        }
-    }
-
-    pub fn print_shortest(
-        &self,
-        component_from: &str,
-        component_to: &str,
-        verbose: bool,
-        only_public: bool,
-    ) {
-        let c_from = match self.component_name_to_ref(component_from) {
-            Some(c) => c,
-            None => {
-                eprintln!("component not found: {}", component_from);
-                std::process::exit(1);
-            }
-        };
-        let c_to = match self.component_name_to_ref(component_to) {
-            Some(c) => c,
-            None => {
-                eprintln!("component not found: {}", component_to);
-                std::process::exit(1);
-            }
-        };
-
-        let mut dists = vec![(0usize, u32::max_value()); self.components.len()];
-        dists[c_from] = (c_from, 0);
-
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(c_from);
-
-        while let Some(c_source) = queue.pop_front() {
-            let dist = dists[c_source].1 + 1;
-
-            for &f in self.component_files[c_source].iter() {
-                if c_source == c_from && only_public && !self.file_is_public[f] {
-                    continue;
-                }
-                for fo in self.file_links[f].outgoing_links.iter() {
-                    let c = self.file_components[*fo];
-                    if dists[c].1 > dist {
-                        dists[c] = (c_source, dist);
-                        queue.push_back(c);
-                    }
-                }
-            }
-        }
-
-        if dists[c_to].1 == u32::max_value() {
-            println!("No path found.");
-            return;
-        }
-
-        let mut result = vec![];
-        let mut c = c_to;
-        while c != c_from {
-            result.push(c);
-            c = dists[c].0;
-        }
-        result.push(c_from);
-        result.reverse();
-
-        for i in 0..result.len() {
-            let c = result[i];
-            println!("{}", self.components[c].nice_name());
-            if verbose && i + 1 != result.len() {
-                let c2 = result[i + 1];
-                for &f in self.component_files[c].iter() {
-                    if c == c_from && only_public && !self.file_is_public[f] {
-                        continue;
-                    }
-                    for &fo in self.file_links[f].outgoing_links.iter() {
-                        if self.file_components[fo] == c2 {
-                            println!("  {} -> {}", self.files[f].path, self.files[fo].path);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn is_header(&self, file_ref: FileRef) -> bool {
+    pub fn is_header(&self, file_ref: FileRef) -> bool {
         let path = &self.files[file_ref].path;
         path.ends_with(".h") || path.ends_with(".hpp") || path.ends_with("hxx")
     }
@@ -327,7 +91,7 @@ impl Graph {
         path.ends_with(".cpp") || path.ends_with(".c")
     }*/
 
-    fn component_name_to_ref(&self, component_from: &str) -> Option<ComponentRef> {
+    pub fn component_name_to_ref(&self, component_from: &str) -> Option<ComponentRef> {
         self.components
             .iter()
             .enumerate()
@@ -406,7 +170,7 @@ fn files_to_components(base_project: &file_collector::FileCollector) -> Vec<Comp
                 }
             }
 
-            return default_component;
+            default_component
         })
         .collect()
 }
