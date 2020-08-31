@@ -32,7 +32,12 @@ pub fn load(options: &crate::Opt) -> Graph {
     for (i, &c) in file_components.iter().enumerate() {
         component_files[c].push(i);
     }
-    let file_links = generate_file_links(&base_project.files, &file_components, &options);
+    let file_links = if let Some(path) = &options.compile_commands {
+        let compile_commands = load_compile_commands(&path).unwrap();
+        generate_file_links_from_commands(&base_project.files, &compile_commands, &options)
+    } else {
+        generate_file_links(&base_project.files, &file_components, &options)
+    };
     let file_is_public = generate_is_public(&file_links, &file_components);
 
     Graph {
@@ -225,6 +230,108 @@ fn generate_file_links(
     file_links
 }
 
+fn generate_file_links_from_commands(
+    files: &[File],
+    compile_commands: &HashMap<String, Vec<String>>,
+    options: &Opt,
+) -> Vec<FileLinks> {
+    use std::iter::FromIterator;
+
+    let root = std::path::PathBuf::from(&options.root)
+        .canonicalize()
+        .unwrap();
+
+    let path_to_id: HashMap<String, FileRef> = HashMap::from_iter(
+        files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (root.join(&f.path).to_str().unwrap().to_string(), i)),
+    );
+
+    let mut file_links = vec![FileLinks::default(); files.len()];
+
+    for (i_file, file) in files.iter().enumerate() {
+        let file_path = root.join(&file.path);
+        let file_path_str = file_path.to_str().unwrap();
+        let include_paths: &Vec<String> = match compile_commands.get(file_path_str) {
+            Some(paths) => paths,
+            None => continue,
+        };
+        fill_file_links(
+            &files,
+            &mut file_links,
+            &path_to_id,
+            &include_paths,
+            i_file,
+            &file.include_paths,
+            &options,
+        );
+    }
+    file_links
+}
+
+fn fill_file_links(
+    files: &[File],
+    mut file_links: &mut Vec<FileLinks>,
+    path_to_id: &HashMap<String, FileRef>,
+    include_paths: &[String],
+    i_file: FileRef,
+    included_files: &[String],
+    options: &Opt,
+) {
+    for included_file in included_files {
+        let parent_dir = std::path::PathBuf::from(included_file);
+        let parent_dir = parent_dir.parent().unwrap().to_str().unwrap();
+        let mut found_include = false;
+        for include_path in
+            std::iter::once(parent_dir).chain(include_paths.iter().map(String::as_str))
+        {
+            let joined = std::path::PathBuf::from(include_path).join(included_file);
+            if !joined.exists() {
+                continue;
+            }
+            //println!("{:?} <--> {:?}", included_file, joined);
+            let joined = joined.canonicalize().unwrap();
+            let joined = joined.to_str().unwrap();
+            let included_file_id = match path_to_id.get(joined) {
+                Some(file_id) => *file_id,
+                None => {
+                    /*println!(
+                        "include file outside build: {} <--> {}",
+                        included_file, joined
+                    );*/
+                    continue;
+                }
+            };
+
+            file_links[i_file].outgoing_links.push(included_file_id);
+            file_links[included_file_id].incoming_links.push(i_file);
+
+            found_include = true;
+
+            // This condition is not entirely correct: we might miss ODR violations
+            if file_links[included_file_id].outgoing_links.is_empty() {
+                fill_file_links(
+                    &files,
+                    &mut file_links,
+                    &path_to_id,
+                    &include_paths,
+                    included_file_id,
+                    &files[included_file_id].include_paths,
+                    &options,
+                );
+            }
+            break;
+        }
+        if !found_include && options.warn_missing {
+            println!(
+                "include not found in {}: {}",
+                files[i_file].path, included_file
+            );
+        }
+    }
+}
+
 fn generate_is_public(file_links: &[FileLinks], file_components: &[ComponentRef]) -> Vec<bool> {
     let mut is_public = vec![false; file_links.len()];
     let mut to_visit: std::collections::VecDeque<FileRef> = std::collections::VecDeque::new();
@@ -248,4 +355,47 @@ fn generate_is_public(file_links: &[FileLinks], file_components: &[ComponentRef]
     }
 
     is_public
+}
+
+fn load_compile_commands(path: &str) -> std::io::Result<HashMap<String, Vec<String>>> {
+    use std::path::PathBuf;
+
+    let mut include_paths: HashMap<String, Vec<String>> = HashMap::new();
+
+    let f = std::fs::File::open(path)?;
+    let commands: Vec<CompileCommand> = serde_json::from_reader(std::io::BufReader::new(f))?;
+
+    for c in commands {
+        let file_name = PathBuf::from(c.file).canonicalize().unwrap();
+        let file_name = file_name.to_str().unwrap();
+        let mut last_token = "";
+        for token in c.command.split(' ') {
+            if token.starts_with("-I") {
+                // TODO: escaped paths? non-absolute paths?
+                let path = PathBuf::from(&token[2..]);
+                if let Ok(path) = path.canonicalize() {
+                    include_paths
+                        .entry(file_name.to_string())
+                        .or_default()
+                        .push(path.to_str().unwrap().to_string());
+                }
+            } else if last_token == "-isystem" {
+                if let Ok(path) = PathBuf::from(token).canonicalize() {
+                    include_paths
+                        .entry(file_name.to_string())
+                        .or_default()
+                        .push(path.to_str().unwrap().to_string());
+                }
+            }
+            last_token = token;
+        }
+    }
+
+    Ok(include_paths)
+}
+
+#[derive(serde::Deserialize)]
+struct CompileCommand {
+    command: String,
+    file: String,
 }

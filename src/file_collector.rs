@@ -115,7 +115,9 @@ impl Drop for FileCollectorThread {
 
 impl ParallelVisitor for FileCollectorThread {
     fn visit(&mut self, entry: Result<DirEntry, ignore::Error>) -> WalkState {
-        let source_suffixes = [".cpp", ".hpp", ".c", ".h"];
+        let source_suffixes = [
+            ".cpp", ".hpp", ".c", ".h", ".inl", ".hh", ".cc", ".ipp", ".imp", ".impl", ".H",
+        ];
         match entry {
             Ok(entry) => {
                 let path_str = entry

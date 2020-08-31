@@ -10,6 +10,9 @@ pub struct Opt {
     #[structopt(long)]
     root: String,
 
+    #[structopt(long)]
+    compile_commands: Option<String>,
+
     /// warn about missing includes
     #[structopt(long)]
     warn_missing: bool,
