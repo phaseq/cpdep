@@ -1,6 +1,7 @@
 use crate::file_collector::{self, Component, File};
 use crate::Opt;
 use std::collections::HashMap;
+use std::io::Write;
 
 pub struct Graph {
     pub files: Vec<File>,
@@ -33,7 +34,11 @@ pub fn load(options: &crate::Opt) -> Graph {
         component_files[c].push(i);
     }
     let file_links = if let Some(path) = &options.compile_commands {
+        println!("loading compile commands...");
+        std::io::stdout().flush().unwrap();
         let compile_commands = load_compile_commands(&path).unwrap();
+        println!("loading file dependencies...");
+        std::io::stdout().flush().unwrap();
         generate_file_links_from_commands(&base_project.files, &compile_commands, &options)
     } else {
         generate_file_links(&base_project.files, &file_components, &options)
@@ -365,6 +370,8 @@ fn load_compile_commands(path: &str) -> std::io::Result<HashMap<String, Vec<Stri
     let f = std::fs::File::open(path)?;
     let commands: Vec<CompileCommand> = serde_json::from_reader(std::io::BufReader::new(f))?;
 
+    println!("loading commands...");
+    std::io::stdout().flush().unwrap();
     for c in commands {
         let file_name = PathBuf::from(c.file).canonicalize().unwrap();
         let file_name = file_name.to_str().unwrap();
