@@ -240,7 +240,7 @@ fn get_dependencies_and_edge_descriptions(
     project: &Graph,
     deps: HashMap<ComponentRef, Vec<Edge>>,
 ) -> (Vec<String>, Vec<Vec<String>>) {
-    let mut sorted_keys: Vec<ComponentRef> = deps.keys().map(|k| *k).collect();
+    let mut sorted_keys: Vec<ComponentRef> = deps.keys().copied().collect();
     let sort_fn = |a: &ComponentRef, b: &ComponentRef| {
         project.components[*a]
             .path
