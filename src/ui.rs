@@ -12,7 +12,7 @@ use std::time::Duration;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Constraint, Direction, Layout};
 use tui::style::{Color, Style};
-use tui::widgets::{Block, Borders, List, ListState, Text};
+use tui::widgets::{Block, Borders, List, ListItem, ListState};
 use tui::Terminal;
 
 struct Gui {
@@ -137,7 +137,7 @@ pub fn show_ui(project: &Graph) -> Result<(), failure::Error> {
 
         let mut field_heights = [0, 0, 0];
 
-        terminal.draw(|mut f| {
+        terminal.draw(|f| {
             let vertical_split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
@@ -166,7 +166,11 @@ pub fn show_ui(project: &Graph) -> Result<(), failure::Error> {
                     2 => "Files (showing all references, toggle with p)",
                     _ => unreachable!(),
                 };
-                let items = gui.columns[i].items.iter().map(|i| Text::raw(i.clone()));
+                let items: Vec<_> = gui.columns[i]
+                    .items
+                    .iter()
+                    .map(|i| ListItem::new(i.as_str()))
+                    .collect();
                 let list = List::new(items)
                     .block(Block::default().borders(Borders::ALL).title(title))
                     .highlight_symbol(">");
