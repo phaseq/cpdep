@@ -7,8 +7,11 @@ mod ui;
 
 #[derive(StructOpt)]
 pub struct Opt {
-    #[structopt(long)]
-    root: String,
+    #[structopt(long, group = "source")]
+    root: Option<String>,
+
+    #[structopt(long, group = "source")]
+    import: Option<String>,
 
     #[structopt(long)]
     compile_commands: Option<String>,
@@ -49,7 +52,9 @@ enum Cmd {
         verbose: bool,
     },
     /// show incoming and outgoing links for the given file
-    File { file_name: String },
+    File {
+        file_name: String,
+    },
     /// show terminal UI
     UI {},
     /// show all strongly connected components
@@ -64,6 +69,9 @@ enum Cmd {
         // only list paths reachable via public header files of A
         #[structopt(long)]
         only_public: bool,
+    },
+    Export {
+        path: String,
     },
 }
 
@@ -88,6 +96,10 @@ fn main() -> Result<(), failure::Error> {
             verbose,
             only_public,
         } => cli::print_shortest(&graph, &component_from, &component_to, verbose, only_public),
+        Cmd::Export { path } => {
+            let encoded = bincode::serialize(&graph)?;
+            std::fs::write(path, &encoded)?;
+        }
     }
 
     Ok(())

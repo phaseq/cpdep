@@ -1,10 +1,12 @@
 use crate::file_collector::{self, Component, File};
 use crate::Opt;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+#[derive(Serialize, Deserialize)]
 pub struct Graph {
     pub files: Vec<File>,
     pub components: Vec<Component>,
@@ -14,7 +16,7 @@ pub struct Graph {
     pub file_is_public: Vec<bool>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct FileLinks {
     pub incoming_links: Vec<FileRef>,
     pub outgoing_links: Vec<FileRef>,
@@ -29,31 +31,41 @@ pub struct Edge {
 }
 
 pub fn load(options: &crate::Opt) -> Graph {
-    let base_project = file_collector::read_files(&options);
-    let file_components = files_to_components(&base_project);
-    let mut component_files = vec![vec![]; base_project.components.len()];
-    for (i, &c) in file_components.iter().enumerate() {
-        component_files[c].push(i);
-    }
-    let file_links = if let Some(path) = &options.compile_commands {
-        println!("loading compile commands...");
-        std::io::stdout().flush().unwrap();
-        let compile_commands = load_compile_commands(&path).unwrap();
-        println!("loading file dependencies...");
-        std::io::stdout().flush().unwrap();
-        generate_file_links_from_commands(&base_project.files, &compile_commands, &options)
-    } else {
-        generate_file_links(&base_project.files, &file_components, &options)
-    };
-    let file_is_public = generate_is_public(&file_links, &file_components);
+    if let Some(root) = &options.root {
+        let base_project = file_collector::read_files(&root, &options);
+        let file_components = files_to_components(&base_project);
+        let mut component_files = vec![vec![]; base_project.components.len()];
+        for (i, &c) in file_components.iter().enumerate() {
+            component_files[c].push(i);
+        }
+        let file_links = if let Some(path) = &options.compile_commands {
+            println!("loading compile commands...");
+            std::io::stdout().flush().unwrap();
+            let compile_commands = load_compile_commands(&path).unwrap();
+            println!("loading file dependencies...");
+            std::io::stdout().flush().unwrap();
+            generate_file_links_from_commands(
+                &base_project.files,
+                &compile_commands,
+                &root,
+                &options,
+            )
+        } else {
+            generate_file_links(&base_project.files, &file_components, &options)
+        };
+        let file_is_public = generate_is_public(&file_links, &file_components);
 
-    Graph {
-        files: base_project.files,
-        components: base_project.components,
-        file_components,
-        component_files,
-        file_links,
-        file_is_public,
+        Graph {
+            files: base_project.files,
+            components: base_project.components,
+            file_components,
+            component_files,
+            file_links,
+            file_is_public,
+        }
+    } else {
+        let encoded = std::fs::read(options.import.as_ref().unwrap()).unwrap();
+        bincode::deserialize(&encoded).unwrap()
     }
 }
 
@@ -248,11 +260,12 @@ fn to_internal_path(p: &str) -> String {
 fn generate_file_links_from_commands(
     files: &[File],
     compile_commands: &HashMap<String, Vec<String>>,
+    root: &str,
     options: &Opt,
 ) -> Vec<FileLinks> {
     use std::iter::FromIterator;
 
-    let root = PathBuf::from(&options.root).canonicalize().unwrap();
+    let root = PathBuf::from(&root).canonicalize().unwrap();
 
     let path_to_id: HashMap<String, FileRef> =
         HashMap::from_iter(files.iter().enumerate().map(|(i, f)| {

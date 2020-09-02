@@ -1,5 +1,6 @@
 use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, WalkState};
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -12,8 +13,8 @@ lazy_static! {
             .unwrap();
 }
 
-pub fn read_files(options: &crate::Opt) -> FileCollector {
-    let root_path = options.root.replace('\\', "/");
+pub fn read_files(root: &str, options: &crate::Opt) -> FileCollector {
+    let root_path = root.replace('\\', "/");
     let root_path = root_path.trim_end_matches('/');
 
     let collector = Arc::new(Mutex::new(FileCollector {
@@ -53,13 +54,13 @@ pub struct FileCollector {
     pub components: Vec<Component>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct File {
     pub path: String,
     pub include_paths: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Component {
     pub path: String,
 }
