@@ -267,31 +267,36 @@ fn generate_file_links_from_commands(
 
     //println!("{:?}", path_to_id.keys());
 
-    let mut file_links = vec![FileLinks::default(); files.len()];
+    let file_links = std::sync::Mutex::new(vec![FileLinks::default(); files.len()]);
 
-    for (i_file, file) in files.iter().enumerate() {
-        let file_path = root.join(&to_internal_path(&file.path));
-        let file_path_str = file_path.to_str().unwrap();
-        let include_paths: Vec<PathBuf> = match compile_commands.get(file_path_str) {
-            Some(paths) => paths.iter().map(PathBuf::from).collect(),
-            None => continue,
-        };
-        fill_file_links(
-            &files,
-            &mut file_links,
-            &path_to_id,
-            &include_paths,
-            i_file,
-            &file.include_paths,
-            &options,
-        );
-    }
+    files
+        .iter()
+        .enumerate()
+        .par_bridge()
+        .for_each(|(i_file, file)| {
+            let file_path = root.join(&to_internal_path(&file.path));
+            let file_path_str = file_path.to_str().unwrap();
+            let include_paths: Vec<PathBuf> = match compile_commands.get(file_path_str) {
+                Some(paths) => paths.iter().map(PathBuf::from).collect(),
+                None => return,
+            };
+            fill_file_links(
+                &files,
+                &file_links,
+                &path_to_id,
+                &include_paths,
+                i_file,
+                &file.include_paths,
+                &options,
+            );
+        });
+    let file_links = std::mem::take(&mut (*file_links.lock().unwrap()));
     file_links
 }
 
 fn fill_file_links(
     files: &[File],
-    mut file_links: &mut Vec<FileLinks>,
+    file_links: &std::sync::Mutex<Vec<FileLinks>>,
     path_to_id: &HashMap<String, FileRef>,
     include_paths: &[PathBuf],
     i_file: FileRef,
@@ -322,16 +327,21 @@ fn fill_file_links(
                 }
             };
 
-            file_links[i_file].outgoing_links.push(included_file_id);
-            file_links[included_file_id].incoming_links.push(i_file);
+            let needs_recurse = {
+                let mut file_links = file_links.lock().unwrap();
+                file_links[i_file].outgoing_links.push(included_file_id);
+                file_links[included_file_id].incoming_links.push(i_file);
+
+                // This condition is not entirely correct: we might miss ODR violations
+                file_links[included_file_id].outgoing_links.is_empty()
+            };
 
             found_include = true;
 
-            // This condition is not entirely correct: we might miss ODR violations
-            if file_links[included_file_id].outgoing_links.is_empty() {
+            if needs_recurse {
                 fill_file_links(
                     &files,
-                    &mut file_links,
+                    &file_links,
                     &path_to_id,
                     &include_paths,
                     included_file_id,
