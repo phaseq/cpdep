@@ -237,6 +237,14 @@ fn generate_file_links(
     file_links
 }
 
+fn to_internal_path(p: &str) -> String {
+    if cfg!(windows) {
+        p.replace('/', "\\")
+    } else {
+        p.to_owned() // TODO: perf
+    }
+}
+
 fn generate_file_links_from_commands(
     files: &[File],
     compile_commands: &HashMap<String, Vec<String>>,
@@ -246,17 +254,23 @@ fn generate_file_links_from_commands(
 
     let root = PathBuf::from(&options.root).canonicalize().unwrap();
 
-    let path_to_id: HashMap<String, FileRef> = HashMap::from_iter(
-        files
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (root.join(&f.path).to_str().unwrap().to_string(), i)),
-    );
+    let path_to_id: HashMap<String, FileRef> =
+        HashMap::from_iter(files.iter().enumerate().map(|(i, f)| {
+            (
+                root.join(to_internal_path(&f.path))
+                    .to_str()
+                    .unwrap()
+                    .to_lowercase(),
+                i,
+            )
+        }));
+
+    //println!("{:?}", path_to_id.keys());
 
     let mut file_links = vec![FileLinks::default(); files.len()];
 
     for (i_file, file) in files.iter().enumerate() {
-        let file_path = root.join(&file.path);
+        let file_path = root.join(&to_internal_path(&file.path));
         let file_path_str = file_path.to_str().unwrap();
         let include_paths: Vec<PathBuf> = match compile_commands.get(file_path_str) {
             Some(paths) => paths.iter().map(PathBuf::from).collect(),
@@ -291,20 +305,19 @@ fn fill_file_links(
         for include_path in
             std::iter::once(parent_dir).chain(include_paths.iter().map(PathBuf::as_path))
         {
-            let joined = include_path.join(included_file);
+            let joined = include_path.join(to_internal_path(included_file));
             if !joined.exists() {
                 continue;
             }
             //println!("{:?} <--> {:?}", included_file, joined);
-            let joined = joined.canonicalize().unwrap();
-            let joined = joined.to_str().unwrap();
-            let included_file_id = match path_to_id.get(joined) {
+            let joined = joined.to_str().unwrap().to_lowercase();
+            let included_file_id = match path_to_id.get(&joined) {
                 Some(file_id) => *file_id,
                 None => {
-                    /*println!(
-                        "include file outside build: {} <--> {}",
-                        included_file, joined
-                    );*/
+                    println!(
+                        "in file {}: include file outside build: {}",
+                        files[i_file].path, joined
+                    );
                     continue;
                 }
             };
@@ -372,7 +385,13 @@ fn load_compile_commands(path: &str) -> std::io::Result<HashMap<String, Vec<Stri
     let include_paths: HashMap<String, Vec<String>> = commands
         .into_par_iter()
         .map(|c| {
-            let file_name = PathBuf::from(c.file).canonicalize().unwrap();
+            let file_name = match PathBuf::from(&c.file).canonicalize() {
+                Ok(path) => path,
+                Err(e) => {
+                    println!("file: {:?}\nerror: {:?}", c.file, e);
+                    return (c.file, vec![]);
+                }
+            };
             let file_name = file_name.to_str().unwrap();
             let mut include_paths = vec![];
             let mut last_token = "";
