@@ -30,9 +30,6 @@ impl Gui {
         if selected > 0 {
             self.invalid = true;
             list_state.select(Some(selected - 1));
-            for c in self.columns.iter_mut().skip(self.sel_column + 1) {
-                c.list_state.select(Some(0));
-            }
         }
     }
 
@@ -42,8 +39,21 @@ impl Gui {
         if selected + 1 < self.columns[self.sel_column].items.len() {
             self.invalid = true;
             list_state.select(Some(selected + 1));
-            for c in self.columns.iter_mut().skip(self.sel_column + 1) {
-                c.list_state.select(Some(0));
+        }
+    }
+
+    fn make_valid(&mut self) {
+        for col in &mut self.columns {
+            if let Some(idx) = col.list_state.selected() {
+                if idx >= col.items.len() {
+                    if col.items.is_empty() {
+                        col.list_state.select(None);
+                    } else {
+                        col.list_state.select(Some(0));
+                    }
+                }
+            } else if !col.items.is_empty() {
+                col.list_state.select(Some(0));
             }
         }
     }
@@ -166,6 +176,7 @@ pub fn show_ui(project: &Graph) -> Result<(), failure::Error> {
                     2 => "Files (showing all references, toggle with p)",
                     _ => unreachable!(),
                 };
+                gui.make_valid();
                 let items: Vec<_> = gui.columns[i]
                     .items
                     .iter()
