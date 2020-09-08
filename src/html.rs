@@ -37,17 +37,6 @@ fn export_component(graph: &Graph, c: ComponentRef, root: &Path) -> std::io::Res
     f.write_all(html.as_bytes())?;
 
     Ok(())
-    /*println!(
-        "{} ({})",
-        graph.components[c].nice_name(),
-        graph.component_files[c].len()
-    );
-
-    println!("  Incoming:");
-    print_deps(dep_in);
-
-    println!("  Outgoing:");
-    print_deps(dep_out);*/
 }
 
 fn sorted_dep_keys(graph: &Graph, deps: &HashMap<ComponentRef, Vec<Edge>>) -> Vec<ComponentRef> {
