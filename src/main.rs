@@ -3,6 +3,7 @@ use structopt::StructOpt;
 mod cli;
 mod file_collector;
 mod graph;
+mod html;
 mod ui;
 
 #[derive(StructOpt)]
@@ -57,6 +58,10 @@ enum Cmd {
     },
     /// show terminal UI
     UI {},
+    /// export as html to the given directory
+    HTML {
+        directory: String,
+    },
     /// show all strongly connected components
     Scc {},
     /// list the shortest path from component A to B
@@ -89,6 +94,7 @@ fn main() -> Result<(), failure::Error> {
         Cmd::File { file_name } => cli::print_file_info(&graph, &file_name),
         Cmd::Headers { component, verbose } => cli::print_headers(&graph, component, verbose),
         Cmd::UI {} => ui::show_ui(&graph)?,
+        Cmd::HTML { directory } => html::export(&graph, &directory)?,
         Cmd::Scc {} => cli::show_sccs(&graph),
         Cmd::Shortest {
             component_from,
