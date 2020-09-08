@@ -118,6 +118,9 @@ markup::define! {
                     font-family: monospace;
                     margin-bottom: 0.2em;
                 }
+                .dep-count {
+                    color: #aaa;
+                }
                 "#)}
             }
         }
@@ -131,7 +134,11 @@ markup::define! {
             details {
                 summary {
                     {graph.components[c_ref].nice_name()}
-                    " "
+                    span[class="dep-count"] {
+                        " ("
+                        {deps[&c_ref].len()}
+                        ") "
+                    }
                     a[href=format!("{}.html", graph.components[c_ref].nice_name().replace('/', "__"))] {
                         "[go]"
                     }
